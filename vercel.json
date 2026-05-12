@@ -13,6 +13,11 @@
       }
     }
   ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 300
+    }
+  },
   "routes": [
     {
       "src": "/api/(.*)",

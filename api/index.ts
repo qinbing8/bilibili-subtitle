@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import axios from 'axios'
+import crypto from 'crypto'
 import OpenApiClient, {
   Config as OpenApiConfig,
   Params,
@@ -350,6 +351,160 @@ export async function getBilibiliDashAudioUrl(bilibiliUrl: string, pageIndex = 0
   throw new Error('B站未返回任何可用音频流，可能是版权受限视频')
 }
 
+type TingwuStatus = 'ONGOING' | 'COMPLETED' | 'FAILED'
+
+interface TingwuJson {
+  Paragraphs: Array<{
+    ParagraphId: string
+    Sentences: Array<{
+      SentenceId: string | number
+      Start: number
+      End: number
+      Text: string
+      SpeakerId?: string
+    }>
+  }>
+}
+
+interface ReadingParagraph {
+  time: string
+  speaker?: string
+  text: string
+}
+
+interface VideoMeta {
+  title: string
+  bvid: string
+  durationMs?: number
+  fileName: string
+  source: '通义听悟'
+}
+
+async function getTingwuTaskInfo(taskId: string) {
+  const cfg = getTingwuConfig()
+  const client = new OpenApiClient(
+    new OpenApiConfig({
+      accessKeyId: cfg.accessKeyId,
+      accessKeySecret: cfg.accessKeySecret,
+      endpoint: 'tingwu.cn-beijing.aliyuncs.com',
+      protocol: 'https',
+    }),
+  )
+  const params = new Params({
+    action: 'GetTaskInfo',
+    version: '2023-09-30',
+    pathname: `/openapi/tingwu/v2/tasks/${encodeURIComponent(taskId)}`,
+    method: 'GET',
+    authType: 'AK',
+    style: 'ROA',
+    reqBodyType: 'json',
+    bodyType: 'json',
+  })
+  const resp = await client.callApi(params, new OpenApiRequest({}), new RuntimeOptions({}))
+  return resp.body
+}
+
+function formatMs(ms: number): string {
+  const total = Math.floor((ms || 0) / 1000)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return [h, m, s].map((value) => String(value).padStart(2, '0')).join(':')
+}
+
+function toReadingParagraphs(json: TingwuJson): ReadingParagraph[] {
+  const out: ReadingParagraph[] = []
+  for (const paragraph of json.Paragraphs || []) {
+    let buf = ''
+    let startMs = 0
+    let speaker: string | undefined
+    for (const sentence of paragraph.Sentences || []) {
+      const text = sentence.Text?.trim() || ''
+      if (!text) continue
+      const nextSpeaker = sentence.SpeakerId ? `说话人 ${sentence.SpeakerId}` : undefined
+      const shouldFlush = Boolean(buf) && (buf.length + text.length > 200 || nextSpeaker !== speaker)
+      if (shouldFlush) {
+        out.push({ time: formatMs(startMs), speaker, text: buf.trim() })
+        buf = ''
+      }
+      if (!buf) {
+        startMs = sentence.Start
+        speaker = nextSpeaker
+      }
+      buf += text
+    }
+    if (buf) {
+      out.push({ time: formatMs(startMs), speaker, text: buf.trim() })
+    }
+  }
+  return out
+}
+
+async function renderDocx(meta: VideoMeta, paragraphs: ReadingParagraph[]): Promise<Buffer> {
+  const { Document, HeadingLevel, Packer, Paragraph, TextRun } = await import('docx')
+  const children = [
+    new Paragraph({ text: meta.title || '转写结果', heading: HeadingLevel.TITLE }),
+    new Paragraph(`BV号：${meta.bvid}`),
+    new Paragraph(`时长：${meta.durationMs ? formatMs(meta.durationMs) : '-'}`),
+    new Paragraph(`字幕来源：通义听悟`),
+    new Paragraph(`转写时间：${new Date().toLocaleString('zh-CN')}`),
+    new Paragraph({ text: '正文', heading: HeadingLevel.HEADING_1 }),
+    ...paragraphs.map(
+      (paragraph) =>
+        new Paragraph({
+          children: [
+            new TextRun({ text: `[${paragraph.time}] ` }),
+            ...(paragraph.speaker
+              ? [new TextRun({ text: `${paragraph.speaker}：`, bold: true })]
+              : []),
+            new TextRun(paragraph.text),
+          ],
+        }),
+    ),
+  ]
+  return Packer.toBuffer(new Document({ sections: [{ children }] }))
+}
+
+function renderTxt(meta: VideoMeta, paragraphs: ReadingParagraph[]): string {
+  return [
+    meta.title || '转写结果',
+    `BV号：${meta.bvid}`,
+    `时长：${meta.durationMs ? formatMs(meta.durationMs) : '-'}`,
+    `字幕来源：通义听悟`,
+    `转写时间：${new Date().toLocaleString('zh-CN')}`,
+    '',
+    ...paragraphs.map((paragraph) =>
+      `[${paragraph.time}] ${paragraph.speaker ? `${paragraph.speaker}：` : ''}${paragraph.text}`,
+    ),
+  ].join('\n')
+}
+
+function signMeta(meta: VideoMeta): string {
+  const secret = process.env.META_TOKEN_SECRET?.trim() || 'unsafe-dev-key'
+  const payload = Buffer.from(JSON.stringify(meta)).toString('base64url')
+  const sig = crypto.createHmac('sha256', secret).update(payload).digest('base64url')
+  return `${payload}.${sig}`
+}
+
+function verifyMeta(token: string): VideoMeta | null {
+  if (!token) return null
+  const [payload, sig] = token.split('.')
+  if (!payload || !sig) return null
+  const secret = process.env.META_TOKEN_SECRET?.trim() || 'unsafe-dev-key'
+  const expected = crypto.createHmac('sha256', secret).update(payload).digest('base64url')
+  if (sig !== expected) return null
+  try {
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8'))
+  } catch {
+    return null
+  }
+}
+
+async function fetchTingwuJson(url: string): Promise<TingwuJson> {
+  const resp = await axios.get(url, { timeout: 30000, responseType: 'json' })
+  return resp.data as TingwuJson
+}
+
 app.post('/api/process-video', async (req, res) => {
   try {
     const { url } = req.body || {}
@@ -486,6 +641,167 @@ app.post('/api/download-video', async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : '获取音频失败',
+    })
+  }
+})
+
+app.post('/api/transcription/start', async (req, res) => {
+  try {
+    const { bilibiliUrl, language, page, diarization, textPolish } = req.body || {}
+    if (!bilibiliUrl) {
+      return res.status(400).json({ success: false, error: '缺少 bilibiliUrl' })
+    }
+
+    const audio = await getBilibiliDashAudioUrl(bilibiliUrl, Number(page) || 0)
+    const taskId = await createTingwuTask(audio.audioUrl, language, {
+      diarization: !!diarization,
+      textPolish: !!textPolish,
+    })
+
+    const meta: VideoMeta = {
+      title: audio.title,
+      bvid: audio.bvid,
+      durationMs: audio.durationMs,
+      fileName: audio.fileName,
+      source: '通义听悟',
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        taskId,
+        audioUrl: audio.audioUrl,
+        audioFormat: audio.audioFormat,
+        fileName: audio.fileName,
+        expiresAt: audio.expiresAt,
+        bandwidth: audio.bandwidth,
+        source: audio.source,
+        warning:
+          audio.source === 'durl-fallback'
+            ? '降级为 FLV（含视频），听悟可能拒绝。建议配置 BILIBILI_SESSDATA。'
+            : null,
+        metaToken: signMeta(meta),
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : '创建任务失败',
+    })
+  }
+})
+
+app.get('/api/transcription/status', async (req, res) => {
+  const taskId = String(req.query.taskId || '')
+  if (!taskId) {
+    return res.status(400).json({ success: false, error: '缺少 taskId' })
+  }
+
+  try {
+    const info: any = await getTingwuTaskInfo(taskId)
+    const raw = info?.Data?.TaskStatus
+    const status: TingwuStatus =
+      raw === 'COMPLETED' ? 'COMPLETED' : raw === 'FAILED' ? 'FAILED' : 'ONGOING'
+
+    let preview: string | undefined
+    if (status === 'COMPLETED' && info?.Data?.Result?.Transcription) {
+      try {
+        const json = await fetchTingwuJson(info.Data.Result.Transcription)
+        const paragraphs = toReadingParagraphs(json)
+        preview = paragraphs
+          .slice(0, 2)
+          .map((paragraph) => paragraph.text)
+          .join(' ')
+          .slice(0, 200)
+      } catch {
+        // 预览失败不影响主流程
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        status,
+        errorMessage: status === 'FAILED' ? info?.Data?.ErrorMessage : undefined,
+        transcriptionUrl: status === 'COMPLETED' ? info?.Data?.Result?.Transcription : undefined,
+        durationMs: info?.Data?.DurationMs,
+        preview,
+      },
+    })
+  } catch {
+    return res.status(502).json({ success: false, error: '查询任务失败，请稍后重试' })
+  }
+})
+
+app.get('/api/transcription/download', async (req, res) => {
+  try {
+    const taskId = String(req.query.taskId || '')
+    const format = String(req.query.format || 'docx') as 'docx' | 'txt'
+    const meta: VideoMeta = verifyMeta(String(req.query.meta || '')) || {
+      title: taskId,
+      bvid: '-',
+      durationMs: 0,
+      fileName: `${taskId}.${format}`,
+      source: '通义听悟',
+    }
+
+    if (!taskId) {
+      return res.status(400).json({ success: false, error: '缺少 taskId' })
+    }
+    if (!['docx', 'txt'].includes(format)) {
+      return res.status(400).json({ success: false, error: 'format 仅支持 docx 或 txt' })
+    }
+
+    const info: any = await getTingwuTaskInfo(taskId)
+    if (info?.Data?.TaskStatus === 'FAILED') {
+      return res.status(409).json({
+        success: false,
+        error: info?.Data?.ErrorMessage || '转写失败',
+      })
+    }
+    if (info?.Data?.TaskStatus !== 'COMPLETED') {
+      return res.status(409).json({ success: false, error: '任务尚未完成，请继续轮询' })
+    }
+    const url = info?.Data?.Result?.Transcription
+    if (!url) {
+      return res.status(404).json({ success: false, error: '听悟结果中缺少转写 JSON URL' })
+    }
+
+    let json: TingwuJson
+    try {
+      json = await fetchTingwuJson(url)
+    } catch (error: any) {
+      const code = error?.response?.status
+      if (code === 403 || code === 404) {
+        return res.status(410).json({
+          success: false,
+          error: '转写结果已过期（约110分钟），请重新创建任务',
+        })
+      }
+      return res.status(502).json({ success: false, error: '拉取转写 JSON 失败' })
+    }
+
+    const paragraphs = toReadingParagraphs(json)
+    const fileBase = (meta.title || taskId).replace(/[\\/:*?"<>|]/g, '_').slice(0, 180)
+    const fileName = `${fileBase}.${format}`
+
+    if (format === 'txt') {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
+      return res.send(renderTxt(meta, paragraphs))
+    }
+
+    const buf = await renderDocx(meta, paragraphs)
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    )
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
+    return res.send(buf)
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : '下载失败',
     })
   }
 })
