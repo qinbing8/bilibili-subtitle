@@ -1,219 +1,99 @@
-# B站视频字幕提取工具 - Vercel 部署指南
+# B 站音频转写助手部署指南
 
 ## 前置要求
 
-1. **Node.js 和 npm**
-   - 安装 Node.js（推荐 v18 或更高版本）
-   - 下载地址: https://nodejs.org/
+1. Node.js 18+
+2. npm
+3. 一个可用的 Vercel 账号
+4. 阿里云通义听悟与通义千问相关密钥
 
-2. **Vercel 账号**
-   - 注册账号: https://vercel.com/signup
-   - 可以使用 GitHub、GitLab 或 Bitbucket 账号登录
+## 部署方式
 
-## 部署步骤
+### 方式一：Vercel 网页界面
 
-### 方法一：通过 Vercel 网页界面部署（推荐）
+1. 将项目推送到 GitHub
+2. 在 Vercel 中选择 `Import Project`
+3. 选择仓库并保持默认 Vite 构建设置
+4. 配置本文下方的环境变量
+5. 点击 `Deploy`
 
-1. **准备 Git 仓库**
-   ```powershell
-   # 初始化 Git 仓库（如果还没有）
-   git init
-   git add .
-   git commit -m "Initial commit for Vercel deployment"
-   ```
+### 方式二：Vercel CLI
 
-2. **推送到 GitHub**
-   - 在 GitHub 上创建一个新仓库
-   - 推送代码到 GitHub:
-   ```powershell
-   git remote add origin <你的GitHub仓库URL>
-   git branch -M main
-   git push -u origin main
-   ```
-
-3. **在 Vercel 上导入项目**
-   - 访问 https://vercel.com/new
-   - 选择 "Import Git Repository"
-   - 选择你刚才推送的 GitHub 仓库
-   - Vercel 会自动检测到这是一个 Vite 项目
-
-4. **配置部署设置**
-   - Framework Preset: `Vite`
-   - Build Command: `npm run build`
-   - Output Directory: `dist`
-   - Install Command: `npm install`
-   
-5. **点击 "Deploy"**
-   - Vercel 会自动构建和部署你的应用
-   - 部署完成后会获得一个 `.vercel.app` 域名
-
-### 方法二：使用 Vercel CLI 部署
-
-1. **安装 Vercel CLI**
-   ```powershell
+1. 安装 CLI
+   ```bash
    npm install -g vercel
    ```
-
-2. **登录 Vercel**
-   ```powershell
+2. 登录
+   ```bash
    vercel login
    ```
-
-3. **部署项目**
-   ```powershell
-   # 进入项目目录
-   cd "c:\Users\Vigor\OneDrive\Obsidian\个人工作台\Vibe Coding\B站视频字幕提取\Subtitle acquisition"
-   
-   # 首次部署（会引导你配置项目）
+3. 在项目根目录执行
+   ```bash
    vercel
-   
-   # 生产环境部署
+   ```
+4. 生产部署
+   ```bash
    vercel --prod
    ```
 
-4. **配置问题回答**
-   - Set up and deploy? `Y`
-   - Which scope? 选择你的账号
-   - Link to existing project? `N`
-   - What's your project's name? `bilibili-subtitle-extractor`
-   - In which directory is your code located? `./`
-   - Want to override the settings? `N`
+## 本地验证
 
-## 项目配置说明
+部署前建议先确认本地通过以下命令：
 
-### 文件结构
-```
-.
-├── api/
-│   ├── index.ts          # Vercel Serverless API 入口
-│   └── server.ts         # 原本地开发服务器
-├── src/
-│   ├── App.tsx
-│   ├── main.tsx
-│   └── index.css
-├── dist/                 # 构建输出目录
-├── package.json
-├── vercel.json          # Vercel 配置文件
-├── vite.config.ts
-└── .gitignore
-```
-
-### vercel.json 配置
-```json
-{
-  "version": 2,
-  "builds": [
-    {
-      "src": "api/index.ts",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist"
-      }
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/index.ts"
-    },
-    {
-      "handle": "filesystem"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
-    }
-  ]
-}
-```
-
-## 环境变量配置（可选）
-
-如果你的应用需要 API 密钥或其他敏感信息：
-
-1. **在 Vercel 网页界面**
-   - 进入项目 → Settings → Environment Variables
-   - 添加需要的环境变量
-
-2. **使用 CLI**
-   ```powershell
-   vercel env add VARIABLE_NAME
-   ```
-
-## 本地测试
-
-在部署前，确保本地构建成功：
-
-```powershell
-# 安装依赖
+```bash
 npm install
-
-# 构建项目
+npm run check
 npm run build
-
-# 预览构建结果
-npm run preview
 ```
+
+## 环境变量配置（必填）
+
+### 必填项（5 个）
+
+- `ALI_ACCESS_KEY_ID`: 阿里云 RAM AccessKey ID
+- `ALI_ACCESS_KEY_SECRET`: 阿里云 RAM AccessKey Secret
+- `ALI_APP_KEY`: 通义听悟 AppKey
+- `DASHSCOPE_API_KEY`: 通义千问 API Key
+- `APP_ACCESS_PASSWORD`: 应用访问密码，前端登录页会使用
+
+### 可选项（4 个）
+
+- `LANGUAGE`: 默认转写语言，建议设为 `auto`
+- `BILIBILI_SESSDATA`: B 站登录态 Cookie，不配时部分视频可能拿不到可用音频
+- `ALLOWED_ORIGINS`: CORS 白名单，多个域名用逗号分隔
+- `META_TOKEN_SECRET`: 下载元数据签名密钥，建议生产环境配置
+
+修改环境变量后，需要在 Vercel 控制台重新触发一次部署。
+
+## 构建设置
+
+- Framework Preset: `Vite`
+- Build Command: `npm run build`
+- Output Directory: `dist`
+- Install Command: `npm install`
+
+## 部署后检查
+
+1. 打开站点首页，确认先出现密码登录遮罩
+2. 输入配置的访问密码后进入主界面
+3. 提交一个 B 站链接，确认前端会请求 `/api/transcription/start`
+4. 在浏览器网络面板确认请求头带有 `X-App-Password`
+5. 转写完成后，确认可下载 `.docx` 和 `.txt`
 
 ## 常见问题
 
-### 1. 构建失败
-- 检查 Node.js 版本（推荐 v18+）
-- 删除 `node_modules` 和 `package-lock.json`，重新安装依赖
-- 检查 TypeScript 类型错误
+### 1. 环境变量改了但页面行为没变
 
-### 2. API 路由不工作
-- 确保 `vercel.json` 配置正确
-- 检查 API 路由路径是否以 `/api/` 开头
-- 查看 Vercel 部署日志
+通常是因为项目还没重新部署。Vercel 只有在新的 deployment 中才会注入最新变量。
 
-### 3. 环境变量未生效
-- 在 Vercel 项目设置中添加环境变量
-- 重新部署项目
+### 2. 提交任务时报 401
 
-## 自动部署
+检查前端输入的密码是否与 `APP_ACCESS_PASSWORD` 一致。
 
-连接 Git 仓库后，Vercel 会自动：
-- 监听 `main` 分支的推送
-- 每次推送自动触发部署
-- 生成预览链接用于测试
+### 3. 提交任务时报音频相关错误
 
-## 自定义域名
+优先检查 `BILIBILI_SESSDATA` 是否配置，以及视频本身是否存在版权或登录限制。
 
-1. 在 Vercel 项目设置中选择 "Domains"
-2. 添加你的域名
-3. 按照提示配置 DNS 记录
+### 4. 下载结果时报已过期
 
-## 监控和日志
-
-- 访问 Vercel 项目仪表板查看：
-  - 部署状态
-  - 构建日志
-  - 运行时日志
-  - 访问统计
-
-## 更新项目
-
-推送代码到 Git 仓库即可触发自动部署：
-```powershell
-git add .
-git commit -m "Update features"
-git push
-```
-
-## 资源链接
-
-- Vercel 文档: https://vercel.com/docs
-- Vite 文档: https://vitejs.dev/
-- Node.js 下载: https://nodejs.org/
-
-## 技术支持
-
-如遇问题，可以：
-1. 查看 Vercel 部署日志
-2. 查阅 Vercel 文档
-3. 在 GitHub Issues 中提问
+转写结果依赖临时地址，任务完成后应尽快下载。
