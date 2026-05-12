@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { Toaster, toast } from 'sonner'
 import axios from 'axios'
 import {
+  AlertTriangle,
   FileText,
   Headphones,
   HelpCircle,
   Loader2,
   Music,
+  ShieldCheck,
   UploadCloud,
 } from 'lucide-react'
 
@@ -36,6 +38,17 @@ interface TaskMeta {
   audioFormat: 'm4a' | 'flv'
   bandwidth?: number
   source?: 'dash' | 'durl-fallback'
+  audioUrl?: string
+  proxyUrl?: string
+  sourceExpiresAt?: string
+  proxyExpiresAt?: string
+}
+
+interface ProxyConfigState {
+  loaded: boolean
+  configured: boolean
+  host: string | null
+  error?: string
 }
 
 let hasPasswordHeaderInterceptor = false
@@ -57,6 +70,130 @@ function formatElapsed(seconds: number): string {
   const minutes = Math.floor(seconds / 60)
   const remainSeconds = seconds % 60
   return minutes > 0 ? `${minutes}分${remainSeconds}秒` : `${remainSeconds}秒`
+}
+
+function formatTimeRemaining(isoTime?: string): string {
+  if (!isoTime) {
+    return '未知'
+  }
+
+  const diffMs = new Date(isoTime).getTime() - Date.now()
+  if (!Number.isFinite(diffMs)) {
+    return isoTime
+  }
+  if (diffMs <= 0) {
+    return '已过期'
+  }
+
+  const totalSeconds = Math.floor(diffMs / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}小时${minutes}分`
+  }
+  if (minutes > 0) {
+    return `${minutes}分${seconds}秒`
+  }
+  return `${seconds}秒`
+}
+
+function ProxyConfigBanner({ proxyConfig }: { proxyConfig: ProxyConfigState }) {
+  if (!proxyConfig.loaded) {
+    return null
+  }
+
+  if (proxyConfig.error) {
+    return (
+      <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        无法读取公网代理配置状态：{proxyConfig.error}
+      </div>
+    )
+  }
+
+  if (!proxyConfig.configured) {
+    return (
+      <div className="mb-4 rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-sm">
+        <div className="flex items-center gap-2 font-semibold">
+          <AlertTriangle className="h-4 w-4" />
+          公网代理地址未配置
+        </div>
+        <p className="mt-2">
+          通义听悟将无法拉取音频文件。请在独立终端运行
+          <code className="mx-1 rounded bg-rose-100 px-1 py-0.5 text-xs">
+            cloudflared tunnel --url http://localhost:9091
+          </code>
+          ，再把生成的 <code className="rounded bg-rose-100 px-1 py-0.5 text-xs">https://*.trycloudflare.com</code>{' '}
+          写入 <code className="rounded bg-rose-100 px-1 py-0.5 text-xs">PUBLIC_PROXY_BASE_URL</code> 并重启后端。
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <details className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-sm">
+      <summary className="flex cursor-pointer list-none items-center gap-2 font-semibold">
+        <ShieldCheck className="h-4 w-4" />
+        代理通道已配置：{proxyConfig.host || '已隐藏'}
+      </summary>
+      <p className="mt-2 text-xs text-emerald-800">
+        前端仅展示 host，完整 URL 不在这里暴露。实际任务生成后，可在下方“调试信息”里查看本次转写使用的代理 URL。
+      </p>
+    </details>
+  )
+}
+
+function DebugInfoPanel({
+  meta,
+  taskId,
+}: {
+  meta: TaskMeta
+  taskId?: string
+}) {
+  return (
+    <details className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700">
+      <summary className="cursor-pointer font-medium text-slate-800">
+        调试信息
+      </summary>
+      <div className="mt-3 space-y-3">
+        {taskId && (
+          <div>
+            <div className="font-medium text-slate-600">任务 ID</div>
+            <code className="break-all text-[11px] text-slate-800">{taskId}</code>
+          </div>
+        )}
+        {meta.audioUrl && (
+          <div>
+            <div className="font-medium text-slate-600">原始音频直链</div>
+            <code className="break-all text-[11px] text-slate-800">{meta.audioUrl}</code>
+          </div>
+        )}
+        {meta.proxyUrl && (
+          <div>
+            <div className="font-medium text-slate-600">代理 URL</div>
+            <code className="break-all text-[11px] text-slate-800">{meta.proxyUrl}</code>
+          </div>
+        )}
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div>
+            <div className="font-medium text-slate-600">源地址过期</div>
+            <div>{meta.sourceExpiresAt || '未知'}</div>
+            <div className="text-slate-500">
+              剩余：{formatTimeRemaining(meta.sourceExpiresAt)}
+            </div>
+          </div>
+          <div>
+            <div className="font-medium text-slate-600">代理 token 过期</div>
+            <div>{meta.proxyExpiresAt || '未知'}</div>
+            <div className="text-slate-500">
+              剩余：{formatTimeRemaining(meta.proxyExpiresAt)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </details>
+  )
 }
 
 function getActiveStep(task: TaskState): number {
@@ -135,12 +272,55 @@ function App() {
   const [bilibiliUrl, setBilibiliUrl] = useState('')
   const [task, setTask] = useState<TaskState>({ kind: 'IDLE' })
   const [elapsed, setElapsed] = useState(0)
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfigState>({
+    loaded: false,
+    configured: false,
+    host: null,
+  })
   const pollTimer = useRef<number | null>(null)
   const latestTaskRef = useRef<TaskState>({ kind: 'IDLE' })
 
   useEffect(() => {
     latestTaskRef.current = task
   }, [task])
+
+  useEffect(() => {
+    if (!isAuthed) {
+      return
+    }
+
+    let cancelled = false
+
+    void axios
+      .get('/api/health-with-config')
+      .then(({ data }) => {
+        if (cancelled) {
+          return
+        }
+
+        setProxyConfig({
+          loaded: true,
+          configured: !!data.proxyBaseUrlConfigured,
+          host: data.proxyBaseHost || null,
+        })
+      })
+      .catch((error: any) => {
+        if (cancelled) {
+          return
+        }
+
+        setProxyConfig({
+          loaded: true,
+          configured: false,
+          host: null,
+          error: error?.response?.data?.error || error.message || '请求失败',
+        })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isAuthed])
 
   async function tryLogin() {
     if (!pwInput.trim()) {
@@ -395,6 +575,10 @@ function App() {
           audioFormat: taskData.audioFormat,
           bandwidth: taskData.bandwidth,
           source: taskData.source,
+          audioUrl: taskData.audioUrl,
+          proxyUrl: taskData.proxyUrl,
+          sourceExpiresAt: taskData.sourceExpiresAt || taskData.expiresAt,
+          proxyExpiresAt: taskData.proxyExpiresAt,
         },
         startedAt: Date.now(),
         nextDelayMs: 5000,
@@ -457,6 +641,8 @@ function App() {
       <Toaster position="top-right" />
 
       <div className="mx-auto max-w-3xl px-4 py-8">
+        <ProxyConfigBanner proxyConfig={proxyConfig} />
+
         <div className="mb-8 text-center">
           <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-sm text-slate-700 shadow-sm ring-1 ring-slate-200">
             <Headphones className="h-4 w-4 text-cyan-700" />
@@ -561,6 +747,7 @@ function App() {
                   放弃轮询
                 </button>
               </div>
+              <DebugInfoPanel meta={task.meta} taskId={task.taskId} />
             </div>
           )}
 
@@ -593,6 +780,7 @@ function App() {
                   下载纯文本 (.txt)
                 </a>
               </div>
+              <DebugInfoPanel meta={task.meta} taskId={task.taskId} />
               <button
                 onClick={() => {
                   setTask({ kind: 'IDLE' })

@@ -2,15 +2,37 @@ import express from 'express'
 import cors from 'cors'
 import axios from 'axios'
 import crypto from 'crypto'
-import OpenApiClient, {
+import OpenApiClientModule, {
   Config as OpenApiConfig,
   Params,
   OpenApiRequest,
 } from '@alicloud/openapi-client'
 import { RuntimeOptions } from '@alicloud/tea-util'
+import {
+  loadLocalEnv,
+  resolveAudioProxyAllowedHosts,
+  resolveAudioProxyTokenSecret,
+  resolveAudioProxyTtlSec,
+  resolveBackendPort,
+  resolvePublicProxyBaseUrl,
+} from './dev-config.ts'
+import {
+  assertLikelyPublicHttpUrl,
+  buildAudioProxyUrl,
+  createAudioProxyHandler,
+  signAudioProxyToken,
+} from './audio-proxy.ts'
+import { buildCreateTaskRequestBody, buildCreateTaskRequestQuery } from './tingwu-task.ts'
+
+loadLocalEnv()
+
+const OpenApiClient =
+  typeof OpenApiClientModule === 'function'
+    ? OpenApiClientModule
+    : ((OpenApiClientModule as any).default ?? OpenApiClientModule)
 
 const app = express()
-const port = 9090
+const port = resolveBackendPort()
 
 const corsOptions = {
   origin(origin: string | undefined, cb: (error: Error | null, allow?: boolean) => void) {
@@ -24,7 +46,7 @@ const corsOptions = {
     return cb(new Error('Not allowed by CORS'))
   },
   allowedHeaders: ['Content-Type', 'X-App-Password', 'Authorization'],
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'HEAD', 'POST', 'OPTIONS'],
 }
 
 app.use(cors(corsOptions))
@@ -33,6 +55,12 @@ app.use(express.json())
 export function requireApiAccess(req: any, res: any, next: any) {
   if (req.method === 'OPTIONS') return next()
   if (req.path === '/health' || req.originalUrl === '/api/health') return next()
+  if (req.path === '/health-with-config' || req.originalUrl === '/api/health-with-config') {
+    return next()
+  }
+  if (req.path === '/audio-proxy' || req.originalUrl.startsWith('/api/audio-proxy')) {
+    return next()
+  }
 
   const expected = process.env.APP_ACCESS_PASSWORD?.trim()
   if (!expected) {
@@ -77,6 +105,25 @@ function getBilibiliHeaders() {
     headers.Cookie = sessdata.startsWith('SESSDATA=') ? sessdata : `SESSDATA=${sessdata}`
   }
   return headers
+}
+
+function buildHealthWithConfigResponse(env: NodeJS.ProcessEnv = process.env) {
+  const proxyBaseUrl = resolvePublicProxyBaseUrl(env)
+  let proxyBaseHost: string | null = null
+
+  if (proxyBaseUrl) {
+    try {
+      proxyBaseHost = new URL(proxyBaseUrl).host
+    } catch {
+      proxyBaseHost = null
+    }
+  }
+
+  return {
+    status: 'ok' as const,
+    proxyBaseUrlConfigured: Boolean(proxyBaseUrl),
+    proxyBaseHost,
+  }
 }
 
 function sanitizeFileName(name: string, fallback = 'bilibili_audio'): string {
@@ -223,18 +270,14 @@ export async function createTingwuTask(
     bodyType: 'json',
   })
   const request = new OpenApiRequest({
-    body: {
-      AppKey: cfg.appKey,
-      Input: { FileUrl: fileUrl, SourceLanguage: cfg.language },
-      Parameters: {
-        Transcription: opts.diarization
-          ? { DiarizationEnabled: true, Diarization: { SpeakerCount: 0 } }
-          : { DiarizationEnabled: false },
-        TextPolish: { Switch: !!opts.textPolish },
-        AutoChaptersEnabled: false,
-        SummarizationEnabled: false,
-      },
-    },
+    query: buildCreateTaskRequestQuery(),
+    body: buildCreateTaskRequestBody({
+      appKey: cfg.appKey,
+      fileUrl,
+      language: cfg.language,
+      diarization: opts.diarization,
+      textPolish: opts.textPolish,
+    }),
   })
   const response = await client.callApi(params, request, new RuntimeOptions({}))
   const taskId = response.body?.Data?.TaskId || response.body?.TaskId
@@ -501,6 +544,57 @@ function verifyMeta(token: string): VideoMeta | null {
   }
 }
 
+function buildAudioProxyTaskPayload(audio: Awaited<ReturnType<typeof getBilibiliDashAudioUrl>>) {
+  const publicProxyBaseUrl = resolvePublicProxyBaseUrl(process.env)
+  if (!publicProxyBaseUrl) {
+    throw new Error(
+      '服务端未配置 PUBLIC_PROXY_BASE_URL，听悟无法读取音频。请配置公网代理地址（推荐 cloudflared tunnel）。',
+    )
+  }
+
+  const tokenSecret = resolveAudioProxyTokenSecret(process.env)
+  if (!tokenSecret) {
+    throw new Error('服务端未配置 AUDIO_PROXY_TOKEN_SECRET，无法生成音频代理 token。')
+  }
+
+  const ttlSec = resolveAudioProxyTtlSec(process.env)
+  const token = signAudioProxyToken(
+    {
+      v: 1,
+      u: audio.audioUrl,
+      srcExp: new Date(audio.expiresAt).getTime(),
+      mime: audio.mimeType,
+      fn: audio.fileName,
+      bvid: audio.bvid,
+      cid: String(audio.cid),
+    },
+    tokenSecret,
+    ttlSec,
+  )
+  const proxyUrl = buildAudioProxyUrl(publicProxyBaseUrl, token)
+  assertLikelyPublicHttpUrl(proxyUrl)
+
+  return {
+    proxyUrl,
+    proxyExpiresAt: new Date(Date.now() + ttlSec * 1000).toISOString(),
+    sourceExpiresAt: audio.expiresAt,
+  }
+}
+
+const audioProxySecret = resolveAudioProxyTokenSecret(process.env)
+const audioProxyHandler = audioProxySecret
+  ? createAudioProxyHandler({
+      secret: audioProxySecret,
+      allowedHostRegex: resolveAudioProxyAllowedHosts(process.env),
+      upstreamHeaders: getBilibiliHeaders,
+    })
+  : async (_req: express.Request, res: express.Response) => {
+      res.status(503).json({
+        error: 'audio_proxy_not_configured',
+        message: '服务端未配置 AUDIO_PROXY_TOKEN_SECRET，音频代理不可用。',
+      })
+    }
+
 async function fetchTingwuJson(url: string): Promise<TingwuJson> {
   const resp = await axios.get(url, { timeout: 30000, responseType: 'json' })
   return resp.data as TingwuJson
@@ -606,6 +700,13 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
+app.get('/api/health-with-config', (_req, res) => {
+  res.json(buildHealthWithConfigResponse())
+})
+
+app.get('/api/audio-proxy', audioProxyHandler)
+app.head('/api/audio-proxy', audioProxyHandler)
+
 app.post('/api/download-video', async (req, res) => {
   try {
     const { bilibiliUrl, page } = req.body || {}
@@ -654,7 +755,8 @@ app.post('/api/transcription/start', async (req, res) => {
     }
 
     const audio = await getBilibiliDashAudioUrl(bilibiliUrl, Number(page) || 0)
-    const taskId = await createTingwuTask(audio.audioUrl, language, {
+    const { proxyUrl, proxyExpiresAt, sourceExpiresAt } = buildAudioProxyTaskPayload(audio)
+    const taskId = await createTingwuTask(proxyUrl, language, {
       diarization: !!diarization,
       textPolish: !!textPolish,
     })
@@ -672,7 +774,11 @@ app.post('/api/transcription/start', async (req, res) => {
       data: {
         taskId,
         audioUrl: audio.audioUrl,
+        proxyUrl,
+        proxyExpiresAt,
+        sourceExpiresAt,
         audioFormat: audio.audioFormat,
+        mimeType: audio.mimeType,
         fileName: audio.fileName,
         expiresAt: audio.expiresAt,
         bandwidth: audio.bandwidth,

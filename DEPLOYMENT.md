@@ -43,27 +43,60 @@
 ```bash
 npm install
 npm run check
+npm test
 npm run build
 ```
 
 ## 环境变量配置（必填）
 
-### 必填项（5 个）
+### 核心必填项
 
 - `ALI_ACCESS_KEY_ID`: 阿里云 RAM AccessKey ID
 - `ALI_ACCESS_KEY_SECRET`: 阿里云 RAM AccessKey Secret
 - `ALI_APP_KEY`: 通义听悟 AppKey
 - `DASHSCOPE_API_KEY`: 通义千问 API Key
 - `APP_ACCESS_PASSWORD`: 应用访问密码，前端登录页会使用
+- `PUBLIC_PROXY_BASE_URL`: 通义听悟回拉音频时使用的公网代理地址
+- `AUDIO_PROXY_TOKEN_SECRET`: 音频代理 token 签名密钥，建议与 `META_TOKEN_SECRET` 分开配置
 
-### 可选项（4 个）
+### 可选项
 
 - `LANGUAGE`: 默认转写语言，建议设为 `auto`
 - `BILIBILI_SESSDATA`: B 站登录态 Cookie，不配时部分视频可能拿不到可用音频
 - `ALLOWED_ORIGINS`: CORS 白名单，多个域名用逗号分隔
 - `META_TOKEN_SECRET`: 下载元数据签名密钥，建议生产环境配置
+- `AUDIO_PROXY_TOKEN_TTL_SEC`: 音频代理 token 有效期，默认 `1800`
+- `AUDIO_PROXY_ALLOWED_HOSTS`: 自定义允许回源的 host 正则，留空走内置 B 站 CDN 白名单
 
 修改环境变量后，需要在 Vercel 控制台重新触发一次部署。
+
+## 公网音频代理说明
+
+### 本地联调推荐
+
+本地 `localhost:9091` 不能被通义听悟直接访问。联调时建议在独立终端运行：
+
+```bash
+cloudflared tunnel --url http://localhost:9091
+```
+
+把输出的 `https://*.trycloudflare.com` 写入 `PUBLIC_PROXY_BASE_URL`，然后重启本地后端。
+
+### Vercel 部署说明
+
+如果你把项目部署在 Vercel，`PUBLIC_PROXY_BASE_URL` 可以先指向部署域名本身，例如：
+
+```text
+PUBLIC_PROXY_BASE_URL=https://your-project.vercel.app
+```
+
+这样 `/api/audio-proxy` 会复用 Vercel 函数。
+
+重要免责声明：
+
+- 当前 `vercel.json` 中 `api/index.ts` 的 `maxDuration` 为 `300` 秒
+- 大于 5 分钟的音频流，可能在 Vercel 侧被超时截断
+- 如果实测频繁失败，应切换回 Cloudflare Tunnel 作为主方案
 
 ## 构建设置
 
@@ -92,7 +125,12 @@ npm run build
 
 ### 3. 提交任务时报音频相关错误
 
-优先检查 `BILIBILI_SESSDATA` 是否配置，以及视频本身是否存在版权或登录限制。
+优先检查：
+
+- `PUBLIC_PROXY_BASE_URL` 是否已配置为公网地址
+- `AUDIO_PROXY_TOKEN_SECRET` 是否已配置
+- 本地联调时 `cloudflared tunnel --url http://localhost:9091` 是否仍在运行
+- `BILIBILI_SESSDATA` 是否配置，以及视频本身是否存在版权或登录限制
 
 ### 4. 下载结果时报已过期
 
