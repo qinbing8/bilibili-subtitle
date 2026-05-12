@@ -2,7 +2,7 @@
 
 ## 前置要求
 
-1. Node.js 18+
+1. Node.js 24.x（当前已验证环境：v24.14.1）
 2. npm
 3. 一个可用的 Vercel 账号
 4. 阿里云通义听悟与通义千问相关密钥
@@ -64,8 +64,13 @@ npm run build
 - `LANGUAGE`: 默认转写语言，建议设为 `auto`
 - `BILIBILI_SESSDATA`: B 站登录态 Cookie，不配时部分视频可能拿不到可用音频
 - `ALLOWED_ORIGINS`: CORS 白名单，多个域名用逗号分隔
+- `BACKEND_PORT`: 本地后端端口，默认 `9091`
 - `META_TOKEN_SECRET`: 下载元数据签名密钥，建议生产环境配置
 - `AUDIO_PROXY_TOKEN_TTL_SEC`: 音频代理 token 有效期，默认 `1800`
+- `AUDIO_PROXY_MAX_CONCURRENT_PER_TOKEN`: 单 token 并发上限，默认 `1`
+- `AUDIO_PROXY_MAX_CONCURRENT_GLOBAL`: 全局并发上限，默认 `4`
+- `AUDIO_PROXY_MAX_BYTES_PER_TOKEN`: 单 token 累计字节上限，默认 `524288000`
+- `AUDIO_PROXY_MAX_DURATION_MS`: 单 token 生命周期上限，默认 `1800000`
 - `AUDIO_PROXY_ALLOWED_HOSTS`: 自定义允许回源的 host 正则，留空走内置 B 站 CDN 白名单
 
 修改环境变量后，需要在 Vercel 控制台重新触发一次部署。
@@ -97,6 +102,13 @@ PUBLIC_PROXY_BASE_URL=https://your-project.vercel.app
 - 当前 `vercel.json` 中 `api/index.ts` 的 `maxDuration` 为 `300` 秒
 - 大于 5 分钟的音频流，可能在 Vercel 侧被超时截断
 - 如果实测频繁失败，应切换回 Cloudflare Tunnel 作为主方案
+
+## 当前安全行为
+
+- `/api/audio-proxy` 会校验 HMAC token、DNS 解析后的公网地址，以及 B 站 CDN host 白名单
+- `/api/audio-proxy` 有内存级限流：单 token 并发、全局并发、累计字节数、生命周期时长
+- `/api/transcription/start` 返回给前端的是 `audioHost` / `proxyHost`，而不是完整 `audioUrl` / `proxyUrl`
+- 前端调试面板只显示 host，不再暴露完整带 token 的代理 URL
 
 ## 构建设置
 

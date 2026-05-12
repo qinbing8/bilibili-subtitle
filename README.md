@@ -1,128 +1,169 @@
 # B 站音频转写助手
 
-一个用于将 B 站视频提交到通义听悟转写，并导出 `.docx` / `.txt` 文档的 Web 应用。
+一个把 B 站视频音频提交给通义听悟转写，并导出 `.docx` / `.txt` 的 Web 应用。当前链路已经收敛为：
 
-## 功能特点
+`Bilibili URL -> /api/audio-proxy -> Tongyi Tingwu -> 文档导出`
+
+也就是说，项目不再把 B 站原始音频直链直接暴露给前端或听悟，而是通过带签名的代理路由回拉音频。
+
+## 当前能力
 
 - 访问密码登录，避免公开滥用
-- 自动提交 B 站视频音频到通义听悟
-- 轮询转写状态，支持页面刷新后恢复任务
-- 支持下载 Word 文档和纯文本结果
-- 响应式界面，兼容桌面与移动端
+- 自动解析 B 站音频并提交到通义听悟
+- 页面刷新后可恢复轮询中的转写任务
+- 支持导出 `.docx` 与 `.txt`
+- 前端只展示音频源 host / 代理 host，不回传完整带 token 的代理 URL
+- `/api/audio-proxy` 已增加 host 白名单、DNS 私网复核、per-token / global 限流
 
-## 技术栈
+## 文档导航
 
-- **前端**: React + TypeScript + Vite + TailwindCSS
-- **后端**: Express.js (Serverless Functions on Vercel)
-- **部署**: Vercel
-- **API**: Bilibili API, 通义听悟, 通义千问
+- [快速部署指南.md](./快速部署指南.md)：最短路径快速开始，适合第一次跑通
+- [DEPLOYMENT.md](./DEPLOYMENT.md)：Vercel 部署与公网代理细节
+- [MAINTENANCE.md](./MAINTENANCE.md)：本地联调 runbook、端口残留处理、重复问题记录
+- [PROJECT_STATUS.md](./PROJECT_STATUS.md)：当前项目状态与剩余验证项
+
+## 运行前提
+
+- Node.js `24.x`（当前验证环境：`v24.14.1`）
+- npm `11+`
+- 阿里云通义听悟密钥
+- 通义千问 `DASHSCOPE_API_KEY`
+- 一个可用的公网代理地址
+  - 本地联调推荐 `cloudflared tunnel --url http://localhost:9091`
+  - Vercel 部署可先用站点域名本身作为 `PUBLIC_PROXY_BASE_URL`
 
 ## 快速开始
 
-### 本地开发
+### 1. 安装依赖
 
-1. 安装依赖
-   ```bash
-   npm install
-   ```
-2. 启动开发服务器
-   ```bash
-   npm run dev
-   ```
-   - 前端: http://localhost:5173
-   - 后端 API: http://localhost:9090
-3. 类型检查
-   ```bash
-   npm run check
-   ```
-4. 构建项目
-   ```bash
-   npm run build
-   ```
+```bash
+npm install
+```
 
-## 部署到 Vercel
+### 2. 配置环境变量
 
-可通过 Vercel 网页界面、CLI 或 GitHub 集成部署，具体步骤见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+复制一份 `.env.example` 为 `.env.local`，至少填写下面这些变量：
 
-## API 端点
+- `ALI_ACCESS_KEY_ID`
+- `ALI_ACCESS_KEY_SECRET`
+- `ALI_APP_KEY`
+- `DASHSCOPE_API_KEY`
+- `APP_ACCESS_PASSWORD`
+- `PUBLIC_PROXY_BASE_URL`
+- `AUDIO_PROXY_TOKEN_SECRET`
+
+建议同时配置：
+
+- `BILIBILI_SESSDATA`
+- `META_TOKEN_SECRET`
+
+完整变量说明见 [.env.example](./.env.example) 与 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+
+### 3. 本地联调时准备公网代理
+
+如果你是在本机把音频交给通义听悟，`localhost:9091` 对听悟不可见，因此必须先在独立终端运行：
+
+```bash
+cloudflared tunnel --url http://localhost:9091
+```
+
+把输出的 `https://*.trycloudflare.com` 写入 `PUBLIC_PROXY_BASE_URL`，再启动后端。
+
+### 4. 启动后端
+
+建议在独立终端运行，方便看日志和手动停止：
+
+```bash
+npm run dev:backend
+```
+
+默认端口是 `9091`。如果本机已有代理工具占用 `9090`，保持默认值即可；如需改端口，在 `.env.local` 里设置 `BACKEND_PORT=<端口>`。
+
+### 5. 启动前端
+
+```bash
+npm run dev:frontend
+```
+
+打开 `http://localhost:5173`，输入 `APP_ACCESS_PASSWORD` 后即可使用。
+
+### 6. 验证基本可用性
+
+```bash
+npm run check
+npm test
+```
+
+如果要做最小接口确认，可额外访问：
+
+- `GET /api/health`
+- `GET /api/health-with-config`
+
+## 核心接口
 
 ### `POST /api/download-video`
 
-获取 B 站音频流信息。
-
-**请求体**
-```json
-{
-  "bilibiliUrl": "https://www.bilibili.com/video/BV1234567890",
-  "page": 0
-}
-```
+解析 B 站音频流，返回 `audioUrl`、`fileName`、`audioFormat` 等信息，主要用于排障和手工验证。
 
 ### `POST /api/transcription/start`
 
-创建通义听悟转写任务。
+创建通义听悟转写任务。当前返回的是脱敏后的：
 
-**请求体**
-```json
-{
-  "bilibiliUrl": "https://www.bilibili.com/video/BV1234567890",
-  "language": "auto",
-  "page": 0,
-  "diarization": false,
-  "textPolish": false
-}
-```
+- `taskId`
+- `audioHost`
+- `proxyHost`
+- `proxyExpiresAt`
+- `sourceExpiresAt`
+- `metaToken`
+
+前端不再收到完整 `proxyUrl`。
 
 ### `GET /api/transcription/status?taskId=...`
 
-查询转写任务状态。
+轮询转写状态，直到 `COMPLETED` 或 `FAILED`。
 
 ### `GET /api/transcription/download?taskId=...&format=docx|txt&meta=...`
 
-下载转写结果。
+下载导出的 Word / 纯文本结果。
 
-### `GET /api/health`
+### `GET /api/health-with-config`
 
-健康检查端点。
+返回代理配置状态，用于前端横幅和手工联调。
 
-## 环境变量
+## 部署说明
 
-### 必填
+推荐优先看 [快速部署指南.md](./快速部署指南.md)，再按需补充阅读 [DEPLOYMENT.md](./DEPLOYMENT.md)。
 
-- `ALI_ACCESS_KEY_ID`: 阿里云 RAM AccessKey ID
-- `ALI_ACCESS_KEY_SECRET`: 阿里云 RAM AccessKey Secret
-- `ALI_APP_KEY`: 通义听悟 AppKey
-- `DASHSCOPE_API_KEY`: 通义千问 API Key
-- `APP_ACCESS_PASSWORD`: 应用访问密码
+已知部署约束：
 
-### 可选
-
-- `LANGUAGE`: 默认转写语言，建议设为 `auto`
-- `BILIBILI_SESSDATA`: B 站登录态 Cookie，用于提升获取音频成功率
-- `ALLOWED_ORIGINS`: CORS 白名单，逗号分隔
-- `META_TOKEN_SECRET`: 下载元数据签名密钥
-
-## 使用流程
-
-1. 部署后访问 Vercel URL，输入访问密码（部署者配置的 `APP_ACCESS_PASSWORD`）
-2. 粘贴 B 站视频链接
-3. 点击「提交转写任务」
-4. 等待转写（通常 1-5 分钟，中途可关闭页面，下次回来自动恢复）
-5. 完成后点击「下载 Word (.docx)」或「下载纯文本 (.txt)」
+- `api/index.ts` 在 Vercel 上的 `maxDuration` 当前是 `300` 秒
+- 特别长的音频流可能因平台时长限制被截断
+- 如果大文件频繁失败，优先考虑把 `PUBLIC_PROXY_BASE_URL` 切到独立的 tunnel / 代理服务
 
 ## 常见问题
 
-### 1. 页面为什么要求先输入密码？
+### 为什么页面要求先输入密码？
 
-所有 `/api/*` 请求都受 `APP_ACCESS_PASSWORD` 保护，用于避免公开链接被滥用。
+所有 `/api/*` 请求都受 `APP_ACCESS_PASSWORD` 保护，用于减少公开滥用。
 
-### 2. 为什么有些视频提交后无法拿到音频？
+### 为什么有些视频提交后拿不到音频？
 
-部分视频可能需要登录态才能拿到可用音频流，建议配置 `BILIBILI_SESSDATA`。
+常见原因有两个：
 
-### 3. 下载结果为什么会过期？
+- 视频本身受版权或登录限制
+- 未配置 `BILIBILI_SESSDATA`
 
-通义听悟返回的转写结果依赖临时地址，建议任务完成后尽快下载。
+### 为什么本地跑通了下载，听悟却仍然失败？
+
+通常不是下载逻辑坏了，而是听悟无法访问你的音频地址。优先检查：
+
+- `PUBLIC_PROXY_BASE_URL` 是否是公网 `http(s)` 地址
+- 本地 tunnel 是否仍在运行
+- `AUDIO_PROXY_TOKEN_SECRET` 是否已配置
+
+### 为什么结果下载会过期？
+
+通义听悟结果依赖临时地址，建议任务完成后尽快下载。
 
 ## 许可证
 

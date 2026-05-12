@@ -21,7 +21,7 @@
 - 已修复通义听悟 `CreateTask` 请求结构问题，相关逻辑已抽到 [api/tingwu-task.ts](/D:/workspeace/bilibili-subtitle/api/tingwu-task.ts)。
 - 已新增 [api/audio-proxy.ts](/D:/workspeace/bilibili-subtitle/api/audio-proxy.ts)，实现音频代理 token、白名单、Referer 注入、手动跟跳和流式转发。
 - 已扩展 [api/dev-config.ts](/D:/workspeace/bilibili-subtitle/api/dev-config.ts)，支持公网代理地址、代理密钥、TTL 和允许 host 配置。
-- 已改造 [api/server.ts](/D:/workspeace/bilibili-subtitle/api/server.ts) 与 [api/index.ts](/D:/workspeace/bilibili-subtitle/api/index.ts)，让 `/api/transcription/start` 返回并使用 `proxyUrl`，同时新增 `/api/audio-proxy` 与 `/api/health-with-config`。
+- 已改造 [api/server.ts](/D:/workspeace/bilibili-subtitle/api/server.ts) 与 [api/index.ts](/D:/workspeace/bilibili-subtitle/api/index.ts)，让后端内部使用 `proxyUrl`，前端仅收到 `audioHost` / `proxyHost`，同时新增 `/api/audio-proxy` 与 `/api/health-with-config`。
 - 已补测试 [tests/tingwu-task.test.ts](/D:/workspeace/bilibili-subtitle/tests/tingwu-task.test.ts)、[tests/dev-config.test.ts](/D:/workspeace/bilibili-subtitle/tests/dev-config.test.ts)、[tests/audio-proxy.test.ts](/D:/workspeace/bilibili-subtitle/tests/audio-proxy.test.ts)，并验证 `npm test` 与 `npm run check` 通过。
 - 已验证 `/api/download-video` 可成功返回音频信息，`/api/transcription/start` 可成功创建任务。
 - 已在前端 [src/App.tsx](/D:/workspeace/bilibili-subtitle/src/App.tsx) 增加代理配置横幅与调试信息区，方便继续联调。

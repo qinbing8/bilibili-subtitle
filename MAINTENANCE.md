@@ -134,7 +134,7 @@ cloudflared tunnel --url http://localhost:9091
 
 - 终端出现一个 `https://*.trycloudflare.com`
 - 把这个地址写入 `.env.local` 或 `.env` 中的 `PUBLIC_PROXY_BASE_URL`
-- 重启后端，让 `/api/transcription/start` 生成正确的 `proxyUrl`
+- 重启后端，让 `/api/transcription/start` 在服务端生成正确的代理回拉地址，并向前端返回正确的 `proxyHost`
 
 快速验证配置：
 
@@ -198,19 +198,9 @@ $task
 
 - `success = true`
 - `data.taskId` 非空
-- `data.proxyUrl` 非空，且以 `https://` 开头
+- `data.proxyHost` 非空
+- `data.audioHost` 非空
 - `data.metaToken` 非空
-
-新增手工检查：
-
-```powershell
-Invoke-WebRequest -Method Head -Uri $task.data.proxyUrl
-```
-
-期望返回：
-
-- `StatusCode = 200` 或 `206`
-- `Headers['Content-Type']` 为 `audio/mp4` 或同类音频 MIME
 
 ### 步骤 6：轮询任务状态
 
@@ -263,7 +253,7 @@ Get-Item .\tingwu-result.docx | Select-Object Name,Length,LastWriteTime
 
 本次代码改造后的结论：
 
-- `/api/transcription/start` 不再把 B 站音频直链直接交给听悟，而是返回并使用 `proxyUrl`
+- `/api/transcription/start` 不再把 B 站音频直链直接交给听悟；后端内部会使用 `proxyUrl`，前端只看到 `proxyHost`
 - 后端已新增 `/api/audio-proxy` 与 `/api/health-with-config`
 - 音频代理会校验 HMAC token、TTL、B 站 CDN 白名单，并在回源时自动补 `Referer`
 - 当前剩余工作不再是“缺代码”，而是“拿真实公网 tunnel 地址做端到端复测”
@@ -331,8 +321,7 @@ Get-Item .\tingwu-result.docx | Select-Object Name,Length,LastWriteTime
 
 验证方式：
 
-- `/api/transcription/start` 返回 `proxyUrl`
-- `Invoke-WebRequest -Method Head -Uri $task.data.proxyUrl` 返回 `200` 或 `206`
+- `/api/transcription/start` 返回 `proxyHost`
 - `/api/transcription/status` 最终为 `COMPLETED`
 
 适用范围：
