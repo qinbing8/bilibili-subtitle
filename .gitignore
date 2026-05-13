@@ -39,3 +39,4 @@ lerna-debug.log*
 
 # Testing
 coverage
+.ace-tool/

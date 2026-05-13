@@ -66,8 +66,6 @@ const BLOCKED_V4_SUBNETS: Array<readonly [string, number]> = [
 ]
 
 const BLOCKED_V6_SUBNETS: Array<readonly [string, number]> = [
-  ['::', 128],
-  ['::1', 128],
   ['64:ff9b::', 96],
   ['100::', 64],
   ['2001:db8::', 32],
@@ -76,15 +74,40 @@ const BLOCKED_V6_SUBNETS: Array<readonly [string, number]> = [
   ['ff00::', 8],
 ]
 
+const BLOCKED_V6_ADDRESSES = ['::', '::1'] as const
+
 export const BLOCKED_IPS = (() => {
   const list = new BlockList()
+  const safeAddSubnet = (addr: string, prefix: number, family: 'ipv4' | 'ipv6') => {
+    try {
+      list.addSubnet(addr, prefix, family)
+    } catch (error) {
+      console.warn(
+        `[audio-proxy] failed to register blocked subnet ${addr}/${prefix} (${family})`,
+        (error as Error)?.message ?? error,
+      )
+    }
+  }
+  const safeAddAddress = (addr: string, family: 'ipv4' | 'ipv6') => {
+    try {
+      list.addAddress(addr, family)
+    } catch (error) {
+      console.warn(
+        `[audio-proxy] failed to register blocked address ${addr} (${family})`,
+        (error as Error)?.message ?? error,
+      )
+    }
+  }
   for (const [addr, prefix] of BLOCKED_V4_SUBNETS) {
-    list.addSubnet(addr, prefix, 'ipv4')
+    safeAddSubnet(addr, prefix, 'ipv4')
   }
   for (const [addr, prefix] of BLOCKED_V6_SUBNETS) {
-    list.addSubnet(addr, prefix, 'ipv6')
+    safeAddSubnet(addr, prefix, 'ipv6')
   }
-  list.addAddress('255.255.255.255', 'ipv4')
+  safeAddAddress('255.255.255.255', 'ipv4')
+  for (const addr of BLOCKED_V6_ADDRESSES) {
+    safeAddAddress(addr, 'ipv6')
+  }
   return list
 })()
 
