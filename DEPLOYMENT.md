@@ -7,6 +7,22 @@
 3. 一个可用的 Vercel 账号
 4. 阿里云通义听悟与通义千问相关密钥
 
+## 当前推荐架构
+
+当前仓库的默认部署架构是：
+
+`前端 + API -> Vercel / Node.js`
+
+通义听悟回拉音频时，再通过公网访问：
+
+`PUBLIC_PROXY_BASE_URL + /api/audio-proxy`
+
+这里的 Cloudflare 目前默认承担的是“公网暴露”角色，不是“正式应用托管”角色：
+
+- 本地联调：推荐 `cloudflared tunnel --url http://localhost:9091`
+- Vercel 部署：可先直接使用站点域名作为 `PUBLIC_PROXY_BASE_URL`
+- 仓库当前没有 `wrangler.toml` / `wrangler.jsonc`，也没有 Cloudflare Worker 入口，因此不属于现成可直接 `wrangler deploy` 的项目
+
 ## 部署方式
 
 ### 方式一：Vercel 网页界面
@@ -54,10 +70,24 @@ npm run build
 - `ALI_ACCESS_KEY_ID`: 阿里云 RAM AccessKey ID
 - `ALI_ACCESS_KEY_SECRET`: 阿里云 RAM AccessKey Secret
 - `ALI_APP_KEY`: 通义听悟 AppKey
-- `DASHSCOPE_API_KEY`: 通义千问 API Key
+  获取入口：`https://nls-portal.console.aliyun.com/tingwu/projects` -> 我的项目 -> 对应项目的 `Project AppKey`
+- `DASHSCOPE_API_KEY`: 通义千问 / DashScope API Key，用于文稿 AI 排版
 - `APP_ACCESS_PASSWORD`: 应用访问密码，前端登录页会使用
 - `PUBLIC_PROXY_BASE_URL`: 通义听悟回拉音频时使用的公网代理地址
 - `AUDIO_PROXY_TOKEN_SECRET`: 音频代理 token 签名密钥，建议与 `META_TOKEN_SECRET` 分开配置
+
+建议补充说明：
+
+- `PUBLIC_PROXY_BASE_URL`
+  - 本地联调：填 `cloudflared tunnel` 输出的 `https://*.trycloudflare.com`
+  - Vercel 部署：可先填 `https://<your-project>.vercel.app`
+- `AUDIO_PROXY_TOKEN_SECRET`
+  - 建议使用至少 32 字节随机串
+  - 生产环境不要复用 `APP_ACCESS_PASSWORD`
+- `APP_ACCESS_PASSWORD`
+  - 这是你自己定义的访问口令，不是平台分配的密钥
+- `ALI_ACCESS_KEY_ID` / `ALI_ACCESS_KEY_SECRET`
+  - 建议使用 RAM 子账号最小权限密钥，不要直接使用主账号长期密钥
 
 ### 可选项
 
@@ -102,6 +132,24 @@ PUBLIC_PROXY_BASE_URL=https://your-project.vercel.app
 - 当前 `vercel.json` 中 `api/index.ts` 的 `maxDuration` 为 `300` 秒
 - 大于 5 分钟的音频流，可能在 Vercel 侧被超时截断
 - 如果实测频繁失败，应切换回 Cloudflare Tunnel 作为主方案
+
+## Cloudflare CLI 现状说明
+
+如果你问的是“能不能直接像别的项目一样用 Cloudflare CLI 正式发布这个仓库”，当前答案是：`不能直接发`。
+
+原因：
+
+- 后端是按 `Node.js` / `Vercel` 入口组织的
+- 当前没有 `wrangler` 配置文件
+- 当前没有适配 Cloudflare Workers / Pages Functions 的服务端入口
+
+如果后续要支持 Codex 代你执行 Cloudflare 正式部署，至少还需要：
+
+1. 选定 Cloudflare 目标形态：`Workers` 或 `Pages + Functions`
+2. 增加 `wrangler` 配置
+3. 改造后端入口以适配 Cloudflare 运行时
+4. 配置 Cloudflare 环境变量
+5. 再执行 `wrangler deploy`
 
 ## 当前安全行为
 

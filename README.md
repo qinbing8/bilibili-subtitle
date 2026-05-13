@@ -18,6 +18,7 @@
 ## 文档导航
 
 - [快速部署指南.md](./快速部署指南.md)：最短路径快速开始，适合第一次跑通
+- [Vercel部署走通说明.md](./Vercel部署走通说明.md)：专门解释 Vercel 上链路为什么能通，以及完整部署步骤
 - [DEPLOYMENT.md](./DEPLOYMENT.md)：Vercel 部署与公网代理细节
 - [MAINTENANCE.md](./MAINTENANCE.md)：本地联调 runbook、端口残留处理、重复问题记录
 - [PROJECT_STATUS.md](./PROJECT_STATUS.md)：当前项目状态与剩余验证项
