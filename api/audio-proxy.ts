@@ -8,7 +8,7 @@ import type { Readable } from 'node:stream'
 import axios from 'axios'
 import type { Request, Response } from 'express'
 
-import type { AudioProxyRateLimits } from './dev-config'
+import type { AudioProxyRateLimits } from './dev-config.js'
 
 export interface AudioProxyClaims {
   v: 1

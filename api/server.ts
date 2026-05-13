@@ -16,14 +16,14 @@ import {
   resolveAudioProxyTtlSec,
   resolveBackendPort,
   resolvePublicProxyBaseUrl,
-} from './dev-config'
+} from './dev-config.js'
 import {
   assertLikelyPublicHttpUrl,
   buildAudioProxyUrl,
   createAudioProxyHandler,
   signAudioProxyToken,
-} from './audio-proxy'
-import { buildCreateTaskRequestBody, buildCreateTaskRequestQuery } from './tingwu-task'
+} from './audio-proxy.js'
+import { buildCreateTaskRequestBody, buildCreateTaskRequestQuery } from './tingwu-task.js'
 
 loadLocalEnv()
 
