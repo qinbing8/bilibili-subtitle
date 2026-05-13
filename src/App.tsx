@@ -51,6 +51,32 @@ interface ProxyConfigState {
   error?: string
 }
 
+function toDisplayError(error: unknown, fallback = '请求失败'): string {
+  if (typeof error === 'string') {
+    const trimmed = error.trim()
+    return trimmed || fallback
+  }
+
+  if (error instanceof Error) {
+    const trimmed = error.message.trim()
+    return trimmed || fallback
+  }
+
+  if (error && typeof error === 'object') {
+    const record = error as Record<string, unknown>
+    const nestedError = record.error
+    if (typeof nestedError === 'string' && nestedError.trim()) {
+      return nestedError.trim()
+    }
+    const nestedMessage = record.message
+    if (typeof nestedMessage === 'string' && nestedMessage.trim()) {
+      return nestedMessage.trim()
+    }
+  }
+
+  return fallback
+}
+
 let hasPasswordHeaderInterceptor = false
 
 if (!hasPasswordHeaderInterceptor) {
@@ -313,7 +339,7 @@ function App() {
           loaded: true,
           configured: false,
           host: null,
-          error: error?.response?.data?.error || error.message || '请求失败',
+          error: toDisplayError(error?.response?.data, toDisplayError(error, '请求失败')),
         })
       })
 
@@ -331,9 +357,7 @@ function App() {
     localStorage.setItem('app_access_password', pwInput)
 
     try {
-      await axios.post('/api/download-video', {
-        bilibiliUrl: 'https://www.bilibili.com/video/BVprobe',
-      })
+      await axios.get('/api/auth-check')
       setIsAuthed(true)
     } catch (error: any) {
       if (error.response?.status === 401) {
@@ -342,7 +366,8 @@ function App() {
         return
       }
 
-      setIsAuthed(true)
+      setPwError(toDisplayError(error?.response?.data, toDisplayError(error, '登录校验失败')))
+      localStorage.removeItem('app_access_password')
     }
   }
 
@@ -585,8 +610,7 @@ function App() {
         consecutiveErrors: 0,
       })
     } catch (error: any) {
-      const errorMessage =
-        error?.response?.data?.error || error.message || '提交失败'
+      const errorMessage = toDisplayError(error?.response?.data, toDisplayError(error, '提交失败'))
       setTask({ kind: 'FAILED', errorMessage })
       toast.error(errorMessage)
     }

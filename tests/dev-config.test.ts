@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
+import app from '../api/index.ts'
 import {
   DEFAULT_BACKEND_PORT,
   DEFAULT_AUDIO_PROXY_ALLOWED_HOST_PATTERNS,
@@ -46,6 +48,53 @@ function withIsolatedEnv(run: () => void) {
         process.env[key] = value
       }
     }
+  }
+}
+
+async function withIsolatedEnvAsync(run: () => Promise<void>) {
+  const snapshot = new Map<string, string | undefined>()
+  for (const key of TEST_ENV_KEYS) {
+    snapshot.set(key, process.env[key])
+    delete process.env[key]
+  }
+
+  try {
+    await run()
+  } finally {
+    for (const key of TEST_ENV_KEYS) {
+      const value = snapshot.get(key)
+      if (value === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = value
+      }
+    }
+  }
+}
+
+async function withTestServer(run: (baseUrl: string) => Promise<void>) {
+  const server: Server = createServer(app)
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve())
+  })
+
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+  const baseUrl = `http://127.0.0.1:${address.port}`
+
+  try {
+    await run(baseUrl)
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve()
+      })
+    })
   }
 }
 
@@ -166,4 +215,46 @@ test('resolveAudioProxyAllowedHosts 默认回退内置正则，支持环境变�
   assert.equal(custom.length, 2)
   assert.match('foo.example.com', custom[0])
   assert.doesNotMatch('evil.com', custom[0])
+})
+
+test('携带不匹配的 Origin 时 health-with-config 不应返回 500', async () => {
+  await withIsolatedEnvAsync(async () => {
+    process.env.ALLOWED_ORIGINS = 'https://example.com'
+
+    await withTestServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/health-with-config`, {
+        headers: {
+          Origin: 'https://bilibili-subtitle-theta.vercel.app',
+        },
+      })
+
+      assert.equal(response.status, 200)
+      assert.equal(response.headers.get('access-control-allow-origin'), null)
+
+      const body = await response.json()
+      assert.equal(body.status, 'ok')
+    })
+  })
+})
+
+test('auth-check 仅在密码正确时返回成功', async () => {
+  await withIsolatedEnvAsync(async () => {
+    process.env.APP_ACCESS_PASSWORD = 'test-password'
+
+    await withTestServer(async (baseUrl) => {
+      const unauthorized = await fetch(`${baseUrl}/api/auth-check`)
+      assert.equal(unauthorized.status, 401)
+
+      const authorized = await fetch(`${baseUrl}/api/auth-check`, {
+        headers: {
+          'X-App-Password': 'test-password',
+        },
+      })
+
+      assert.equal(authorized.status, 200)
+      assert.deepEqual(await authorized.json(), {
+        success: true,
+      })
+    })
+  })
 })

@@ -38,7 +38,7 @@ const corsOptions = {
     if (!origin || allowed.length === 0 || allowed.includes(origin)) {
       return cb(null, true)
     }
-    return cb(new Error('Not allowed by CORS'))
+    return cb(null, false)
   },
   allowedHeaders: ['Content-Type', 'X-App-Password', 'Authorization'],
   methods: ['GET', 'HEAD', 'POST', 'OPTIONS'],
@@ -697,6 +697,10 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/health-with-config', (_req, res) => {
   res.json(buildHealthWithConfigResponse())
+})
+
+app.get('/api/auth-check', (_req, res) => {
+  res.json({ success: true })
 })
 
 app.get('/api/audio-proxy', audioProxyHandler)
