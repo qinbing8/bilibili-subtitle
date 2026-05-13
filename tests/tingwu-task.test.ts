@@ -5,7 +5,7 @@ import {
   buildCreateTaskRequestBody,
   buildCreateTaskRequestQuery,
   normalizeTingwuSourceLanguage,
-} from '../api/tingwu-task.ts'
+} from '../api/tingwu-task'
 
 test('normalizeTingwuSourceLanguage 将 auto 回退为 cn', () => {
   assert.equal(normalizeTingwuSourceLanguage('auto'), 'cn')

@@ -38,8 +38,8 @@ interface TaskMeta {
   audioFormat: 'm4a' | 'flv'
   bandwidth?: number
   source?: 'dash' | 'durl-fallback'
-  audioUrl?: string
-  proxyUrl?: string
+  audioHost?: string
+  proxyHost?: string
   sourceExpiresAt?: string
   proxyExpiresAt?: string
 }
@@ -96,6 +96,54 @@ function formatElapsed(seconds: number): string {
   const minutes = Math.floor(seconds / 60)
   const remainSeconds = seconds % 60
   return minutes > 0 ? `${minutes}分${remainSeconds}秒` : `${remainSeconds}秒`
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const trimmed = value.trim()
+  return trimmed || undefined
+}
+
+function readOptionalHost(value: unknown): string | undefined {
+  const raw = readOptionalString(value)
+  if (!raw) {
+    return undefined
+  }
+
+  try {
+    return new URL(raw).host || undefined
+  } catch {
+    return raw
+  }
+}
+
+function normalizeTaskMeta(raw: unknown): TaskMeta | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const meta = raw as Record<string, unknown>
+  const metaToken = readOptionalString(meta.metaToken)
+  const fileName = readOptionalString(meta.fileName)
+  const audioFormat = meta.audioFormat === 'm4a' || meta.audioFormat === 'flv' ? meta.audioFormat : null
+
+  if (!metaToken || !fileName || !audioFormat) {
+    return null
+  }
+
+  return {
+    metaToken,
+    fileName,
+    audioFormat,
+    bandwidth: typeof meta.bandwidth === 'number' && Number.isFinite(meta.bandwidth) ? meta.bandwidth : undefined,
+    source: meta.source === 'dash' || meta.source === 'durl-fallback' ? meta.source : undefined,
+    audioHost: readOptionalHost(meta.audioHost ?? meta.audioUrl),
+    proxyHost: readOptionalHost(meta.proxyHost ?? meta.proxyUrl),
+    sourceExpiresAt: readOptionalString(meta.sourceExpiresAt ?? meta.expiresAt),
+    proxyExpiresAt: readOptionalString(meta.proxyExpiresAt),
+  }
 }
 
 function formatTimeRemaining(isoTime?: string): string {
@@ -164,7 +212,7 @@ function ProxyConfigBanner({ proxyConfig }: { proxyConfig: ProxyConfigState }) {
         代理通道已配置：{proxyConfig.host || '已隐藏'}
       </summary>
       <p className="mt-2 text-xs text-emerald-800">
-        前端仅展示 host，完整 URL 不在这里暴露。实际任务生成后，可在下方“调试信息”里查看本次转写使用的代理 URL。
+        前端仅展示 host，完整带 token 的代理 URL 不会回传浏览器。任务创建后，可在下方“调试信息”里确认本次使用的代理 host。
       </p>
     </details>
   )
@@ -189,16 +237,16 @@ function DebugInfoPanel({
             <code className="break-all text-[11px] text-slate-800">{taskId}</code>
           </div>
         )}
-        {meta.audioUrl && (
+        {meta.audioHost && (
           <div>
-            <div className="font-medium text-slate-600">原始音频直链</div>
-            <code className="break-all text-[11px] text-slate-800">{meta.audioUrl}</code>
+            <div className="font-medium text-slate-600">原始音频 Host</div>
+            <code className="break-all text-[11px] text-slate-800">{meta.audioHost}</code>
           </div>
         )}
-        {meta.proxyUrl && (
+        {meta.proxyHost && (
           <div>
-            <div className="font-medium text-slate-600">代理 URL</div>
-            <code className="break-all text-[11px] text-slate-800">{meta.proxyUrl}</code>
+            <div className="font-medium text-slate-600">代理 Host</div>
+            <code className="break-all text-[11px] text-slate-800">{meta.proxyHost}</code>
           </div>
         )}
         <div className="grid gap-2 sm:grid-cols-2">
@@ -380,15 +428,16 @@ function App() {
     try {
       const parsed = JSON.parse(savedTask) as {
         taskId?: string
-        meta?: TaskMeta
+        meta?: unknown
         startedAt?: number
       }
+      const meta = normalizeTaskMeta(parsed.meta)
 
-      if (parsed.taskId && parsed.meta) {
+      if (parsed.taskId && meta) {
         setTask({
           kind: 'POLLING',
           taskId: parsed.taskId,
-          meta: parsed.meta,
+          meta,
           startedAt: parsed.startedAt || Date.now(),
           nextDelayMs: 5000,
           consecutiveErrors: 0,
@@ -591,20 +640,26 @@ function App() {
         toast.warning(taskData.warning)
       }
 
+      const meta = normalizeTaskMeta({
+        metaToken: taskData.metaToken,
+        fileName: taskData.fileName,
+        audioFormat: taskData.audioFormat,
+        bandwidth: taskData.bandwidth,
+        source: taskData.source,
+        audioHost: taskData.audioHost ?? taskData.audioUrl,
+        proxyHost: taskData.proxyHost ?? taskData.proxyUrl,
+        sourceExpiresAt: taskData.sourceExpiresAt ?? taskData.expiresAt,
+        proxyExpiresAt: taskData.proxyExpiresAt,
+      })
+
+      if (!meta) {
+        throw new Error('服务端返回的任务元数据不完整')
+      }
+
       setTask({
         kind: 'POLLING',
         taskId: taskData.taskId,
-        meta: {
-          metaToken: taskData.metaToken,
-          fileName: taskData.fileName,
-          audioFormat: taskData.audioFormat,
-          bandwidth: taskData.bandwidth,
-          source: taskData.source,
-          audioUrl: taskData.audioUrl,
-          proxyUrl: taskData.proxyUrl,
-          sourceExpiresAt: taskData.sourceExpiresAt || taskData.expiresAt,
-          proxyExpiresAt: taskData.proxyExpiresAt,
-        },
+        meta,
         startedAt: Date.now(),
         nextDelayMs: 5000,
         consecutiveErrors: 0,

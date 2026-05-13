@@ -10,17 +10,18 @@ import OpenApiClientModule, {
 import { RuntimeOptions } from '@alicloud/tea-util'
 import {
   resolveAudioProxyAllowedHosts,
+  resolveAudioProxyRateLimits,
   resolveAudioProxyTokenSecret,
   resolveAudioProxyTtlSec,
   resolvePublicProxyBaseUrl,
-} from './dev-config.ts'
+} from './dev-config'
 import {
   assertLikelyPublicHttpUrl,
   buildAudioProxyUrl,
   createAudioProxyHandler,
   signAudioProxyToken,
-} from './audio-proxy.ts'
-import { buildCreateTaskRequestBody, buildCreateTaskRequestQuery } from './tingwu-task.ts'
+} from './audio-proxy'
+import { buildCreateTaskRequestBody, buildCreateTaskRequestQuery } from './tingwu-task'
 
 const app = express()
 
@@ -28,6 +29,29 @@ const OpenApiClient =
   typeof OpenApiClientModule === 'function'
     ? OpenApiClientModule
     : ((OpenApiClientModule as any).default ?? OpenApiClientModule)
+
+const audioProxySecret = resolveAudioProxyTokenSecret(process.env)
+const audioProxyHandler = audioProxySecret
+  ? createAudioProxyHandler({
+      secret: audioProxySecret,
+      allowedHostRegex: resolveAudioProxyAllowedHosts(process.env),
+      rateLimits: resolveAudioProxyRateLimits(process.env),
+      upstreamHeaders: getBilibiliHeaders,
+    })
+  : async (_req: express.Request, res: express.Response) => {
+      res.status(503).json({
+        error: 'audio_proxy_not_configured',
+        message: '服务端未配置 AUDIO_PROXY_TOKEN_SECRET，音频代理不可用。',
+      })
+    }
+
+// /api/audio-proxy must be mounted BEFORE global CORS so no Access-Control-* headers
+// are exposed to browsers. Tingwu calls it server-side and does not need CORS.
+app.options('/api/audio-proxy', (_req, res) => {
+  res.status(204).end()
+})
+app.get('/api/audio-proxy', audioProxyHandler)
+app.head('/api/audio-proxy', audioProxyHandler)
 
 const corsOptions = {
   origin(origin: string | undefined, cb: (error: Error | null, allow?: boolean) => void) {
@@ -51,9 +75,6 @@ export function requireApiAccess(req: any, res: any, next: any) {
   if (req.method === 'OPTIONS') return next()
   if (req.path === '/health' || req.originalUrl === '/api/health') return next()
   if (req.path === '/health-with-config' || req.originalUrl === '/api/health-with-config') {
-    return next()
-  }
-  if (req.path === '/audio-proxy' || req.originalUrl.startsWith('/api/audio-proxy')) {
     return next()
   }
 
@@ -571,24 +592,12 @@ function buildAudioProxyTaskPayload(audio: Awaited<ReturnType<typeof getBilibili
 
   return {
     proxyUrl,
+    proxyHost: new URL(proxyUrl).host,
+    audioHost: new URL(audio.audioUrl).host,
     proxyExpiresAt: new Date(Date.now() + ttlSec * 1000).toISOString(),
     sourceExpiresAt: audio.expiresAt,
   }
 }
-
-const audioProxySecret = resolveAudioProxyTokenSecret(process.env)
-const audioProxyHandler = audioProxySecret
-  ? createAudioProxyHandler({
-      secret: audioProxySecret,
-      allowedHostRegex: resolveAudioProxyAllowedHosts(process.env),
-      upstreamHeaders: getBilibiliHeaders,
-    })
-  : async (_req: express.Request, res: express.Response) => {
-      res.status(503).json({
-        error: 'audio_proxy_not_configured',
-        message: '服务端未配置 AUDIO_PROXY_TOKEN_SECRET，音频代理不可用。',
-      })
-    }
 
 async function fetchTingwuJson(url: string): Promise<TingwuJson> {
   const resp = await axios.get(url, { timeout: 30000, responseType: 'json' })
@@ -703,9 +712,6 @@ app.get('/api/auth-check', (_req, res) => {
   res.json({ success: true })
 })
 
-app.get('/api/audio-proxy', audioProxyHandler)
-app.head('/api/audio-proxy', audioProxyHandler)
-
 app.post('/api/download-video', async (req, res) => {
   try {
     const { bilibiliUrl, page } = req.body || {}
@@ -754,7 +760,8 @@ app.post('/api/transcription/start', async (req, res) => {
     }
 
     const audio = await getBilibiliDashAudioUrl(bilibiliUrl, Number(page) || 0)
-    const { proxyUrl, proxyExpiresAt, sourceExpiresAt } = buildAudioProxyTaskPayload(audio)
+    const { proxyUrl, proxyHost, audioHost, proxyExpiresAt, sourceExpiresAt } =
+      buildAudioProxyTaskPayload(audio)
     const taskId = await createTingwuTask(proxyUrl, language, {
       diarization: !!diarization,
       textPolish: !!textPolish,
@@ -768,12 +775,13 @@ app.post('/api/transcription/start', async (req, res) => {
       source: '通义听悟',
     }
 
+    res.setHeader('Cache-Control', 'no-store')
     return res.json({
       success: true,
       data: {
         taskId,
-        audioUrl: audio.audioUrl,
-        proxyUrl,
+        audioHost,
+        proxyHost,
         proxyExpiresAt,
         sourceExpiresAt,
         audioFormat: audio.audioFormat,

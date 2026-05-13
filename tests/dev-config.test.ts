@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
-import app from '../api/index.ts'
+import app from '../api/index'
 import {
   DEFAULT_BACKEND_PORT,
   DEFAULT_AUDIO_PROXY_ALLOWED_HOST_PATTERNS,
@@ -15,7 +15,7 @@ import {
   resolveAudioProxyTtlSec,
   resolveBackendPort,
   resolvePublicProxyBaseUrl,
-} from '../api/dev-config.ts'
+} from '../api/dev-config'
 
 const TEST_ENV_KEYS = [
   'APP_ACCESS_PASSWORD',

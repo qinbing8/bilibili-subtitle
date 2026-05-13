@@ -6,14 +6,14 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
     "dev:frontend": "vite",
-    "dev:backend": "node --experimental-strip-types api/server.ts",
-    "dev:backend:watch": "node --watch --experimental-strip-types api/server.ts",
+    "dev:backend": "node --import tsx api/server.ts",
+    "dev:backend:watch": "node --watch --import tsx api/server.ts",
     "build": "tsc && vite build",
     "vercel-build": "npm run build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/dev-config.test.ts tests/tingwu-task.test.ts tests/audio-proxy.test.ts"
+    "test": "node --import tsx --test tests/dev-config.test.ts tests/tingwu-task.test.ts tests/audio-proxy.test.ts tests/vercel-runtime-imports.test.ts"
   },
   "dependencies": {
     "@alicloud/openapi-client": "^0.4.15",

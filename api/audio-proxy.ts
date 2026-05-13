@@ -1,10 +1,14 @@
 import crypto from 'node:crypto'
-import { isIP } from 'node:net'
+import { promises as dnsPromises } from 'node:dns'
+import { BlockList, isIP } from 'node:net'
+import { PassThrough } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { Readable } from 'node:stream'
 
 import axios from 'axios'
 import type { Request, Response } from 'express'
+
+import type { AudioProxyRateLimits } from './dev-config'
 
 export interface AudioProxyClaims {
   v: 1
@@ -29,45 +33,117 @@ type AudioProxyVerifyResult =
   | { ok: true; claims: AudioProxyClaims }
   | { ok: false; reason: AudioProxyVerifyFailure }
 
+export type DnsLookupFn = (
+  hostname: string,
+) => Promise<Array<{ address: string; family: 4 | 6 }>>
+
 export interface AudioProxyDeps {
   secret: string
   allowedHostRegex: RegExp[]
   upstreamHeaders: () => Record<string, string>
+  rateLimits: AudioProxyRateLimits
   maxRedirects?: number
   headerTimeoutMs?: number
+  lookup?: DnsLookupFn
+  now?: () => number
+}
+
+const BLOCKED_V4_SUBNETS: Array<readonly [string, number]> = [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+]
+
+const BLOCKED_V6_SUBNETS: Array<readonly [string, number]> = [
+  ['::', 128],
+  ['::1', 128],
+  ['64:ff9b::', 96],
+  ['100::', 64],
+  ['2001:db8::', 32],
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['ff00::', 8],
+]
+
+export const BLOCKED_IPS = (() => {
+  const list = new BlockList()
+  for (const [addr, prefix] of BLOCKED_V4_SUBNETS) {
+    list.addSubnet(addr, prefix, 'ipv4')
+  }
+  for (const [addr, prefix] of BLOCKED_V6_SUBNETS) {
+    list.addSubnet(addr, prefix, 'ipv6')
+  }
+  list.addAddress('255.255.255.255', 'ipv4')
+  return list
+})()
+
+export class BlockedHostError extends Error {
+  hostname: string
+  address: string
+
+  constructor(hostname: string, address: string) {
+    super(`hostname ${hostname} resolves to non-public address ${address}`)
+    this.name = 'BlockedHostError'
+    this.hostname = hostname
+    this.address = address
+  }
+}
+
+export class DnsLookupError extends Error {
+  hostname: string
+
+  constructor(hostname: string, cause: unknown) {
+    super(`dns lookup failed for ${hostname}: ${(cause as Error)?.message || cause}`)
+    this.name = 'DnsLookupError'
+    this.hostname = hostname
+  }
+}
+
+function extractV4FromMappedV6(addr: string): string | null {
+  const dotted = addr.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i)
+  if (dotted) return dotted[1]
+  const hex = addr.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i)
+  if (hex) {
+    const hi = Number.parseInt(hex[1], 16)
+    const lo = Number.parseInt(hex[2], 16)
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
+  }
+  return null
+}
+
+export function isBlockedAddress(address: string, family: 4 | 6): boolean {
+  if (family === 6) {
+    const mapped = extractV4FromMappedV6(address)
+    if (mapped) {
+      return BLOCKED_IPS.check(mapped, 'ipv4')
+    }
+    return BLOCKED_IPS.check(address, 'ipv6')
+  }
+  return BLOCKED_IPS.check(address, 'ipv4')
 }
 
 function signPayload(payload: string, secret: string): string {
   return crypto.createHmac('sha256', secret).update(payload).digest('base64url')
 }
 
-function isPrivateIpv4(hostname: string): boolean {
-  const parts = hostname.split('.').map((part) => Number.parseInt(part, 10))
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+function safeCompareSignature(expected: string, actual: string): boolean {
+  const expectedBuf = Buffer.from(expected, 'utf8')
+  const actualBuf = Buffer.from(actual, 'utf8')
+  if (expectedBuf.length !== actualBuf.length) {
     return false
   }
-
-  const [a, b] = parts
-  return (
-    a === 10 ||
-    a === 127 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168)
-  )
-}
-
-function isPrivateIpv6(hostname: string): boolean {
-  const normalized = hostname.toLowerCase()
-  return (
-    normalized === '::1' ||
-    normalized.startsWith('fc') ||
-    normalized.startsWith('fd') ||
-    normalized.startsWith('fe8') ||
-    normalized.startsWith('fe9') ||
-    normalized.startsWith('fea') ||
-    normalized.startsWith('feb')
-  )
+  return crypto.timingSafeEqual(expectedBuf, actualBuf)
 }
 
 function normalizeHostname(url: URL): string {
@@ -105,25 +181,41 @@ export function verifyAudioProxyToken(
     return { ok: false, reason: 'malformed' }
   }
 
-  if (signPayload(payload, secret) !== sig) {
+  if (!safeCompareSignature(signPayload(payload, secret), sig)) {
     return { ok: false, reason: 'badSig' }
   }
 
+  let parsed: unknown
   try {
-    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as AudioProxyClaims
-    if (!claims || claims.v !== 1 || !claims.u || !claims.iat || !claims.exp || !claims.srcExp) {
-      return { ok: false, reason: 'malformed' }
-    }
-    if (claims.exp <= nowSec) {
-      return { ok: false, reason: 'tokenExpired' }
-    }
-    if (claims.srcExp <= nowSec * 1000) {
-      return { ok: false, reason: 'sourceExpired' }
-    }
-    return { ok: true, claims }
+    parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
   } catch {
     return { ok: false, reason: 'malformed' }
   }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return { ok: false, reason: 'malformed' }
+  }
+
+  const claims = parsed as Partial<AudioProxyClaims>
+  if (
+    claims.v !== 1 ||
+    typeof claims.u !== 'string' ||
+    claims.u.length === 0 ||
+    !Number.isFinite(claims.iat) ||
+    !Number.isFinite(claims.exp) ||
+    !Number.isFinite(claims.srcExp) ||
+    (claims.exp as number) <= (claims.iat as number)
+  ) {
+    return { ok: false, reason: 'malformed' }
+  }
+
+  if ((claims.exp as number) <= nowSec) {
+    return { ok: false, reason: 'tokenExpired' }
+  }
+  if ((claims.srcExp as number) <= nowSec * 1000) {
+    return { ok: false, reason: 'sourceExpired' }
+  }
+  return { ok: true, claims: claims as AudioProxyClaims }
 }
 
 export function assertLikelyPublicHttpUrl(url: string): void {
@@ -139,16 +231,16 @@ export function assertLikelyPublicHttpUrl(url: string): void {
   }
 
   const hostname = normalizeHostname(parsed)
-  if (!hostname || hostname === 'localhost') {
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost')) {
     throw new Error('代理地址不能使用 localhost')
   }
 
   const ipVersion = isIP(hostname)
-  if (ipVersion === 4 && isPrivateIpv4(hostname)) {
-    throw new Error('代理地址不能使用私网 IPv4')
+  if (ipVersion === 4 && isBlockedAddress(hostname, 4)) {
+    throw new Error('代理地址不能使用私网/保留 IPv4')
   }
-  if (ipVersion === 6 && isPrivateIpv6(hostname)) {
-    throw new Error('代理地址不能使用本地 IPv6')
+  if (ipVersion === 6 && isBlockedAddress(hostname, 6)) {
+    throw new Error('代理地址不能使用本地/保留 IPv6')
   }
 }
 
@@ -166,13 +258,149 @@ export function isUpstreamHostAllowed(url: string, regexList: RegExp[]): boolean
   }
 }
 
+const defaultDnsLookup: DnsLookupFn = async (hostname) => {
+  const records = await dnsPromises.lookup(hostname, { all: true, verbatim: true })
+  return records.map((record) => ({
+    address: record.address,
+    family: record.family === 6 ? 6 : 4,
+  }))
+}
+
+export async function assertHostResolvesToPublic(
+  hostname: string,
+  lookup: DnsLookupFn = defaultDnsLookup,
+): Promise<void> {
+  const lowered = hostname.toLowerCase()
+  if (!lowered || lowered === 'localhost' || lowered.endsWith('.localhost')) {
+    throw new BlockedHostError(hostname, 'localhost')
+  }
+
+  const ipVersion = isIP(lowered)
+  if (ipVersion === 4 || ipVersion === 6) {
+    if (isBlockedAddress(lowered, ipVersion as 4 | 6)) {
+      throw new BlockedHostError(hostname, lowered)
+    }
+    return
+  }
+
+  let records: Array<{ address: string; family: 4 | 6 }>
+  try {
+    records = await lookup(lowered)
+  } catch (error) {
+    throw new DnsLookupError(hostname, error)
+  }
+
+  if (records.length === 0) {
+    throw new DnsLookupError(hostname, new Error('no records'))
+  }
+
+  for (const record of records) {
+    if (isBlockedAddress(record.address, record.family)) {
+      throw new BlockedHostError(hostname, record.address)
+    }
+  }
+}
+
 export function buildAudioProxyUrl(baseUrl: string, token: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/api/audio-proxy?t=${encodeURIComponent(token)}`
+}
+
+export type RateLimitFailureReason =
+  | 'token_concurrency'
+  | 'global_concurrency'
+  | 'bytes_exceeded'
+  | 'duration_exceeded'
+
+interface TokenState {
+  active: number
+  bytes: number
+  firstSeenAt: number
+}
+
+export class AudioProxyRateLimiter {
+  private globalActive = 0
+  private readonly config: AudioProxyRateLimits
+  private readonly states = new Map<string, TokenState>()
+  private readonly now: () => number
+
+  constructor(config: AudioProxyRateLimits, now?: () => number) {
+    this.config = config
+    this.now = now ?? (() => Date.now())
+  }
+
+  tryAcquire(
+    tokenKey: string,
+  ): { ok: true } | { ok: false; reason: RateLimitFailureReason } {
+    this.gc()
+    const now = this.now()
+    const existing = this.states.get(tokenKey)
+    const state: TokenState = existing ?? { active: 0, bytes: 0, firstSeenAt: now }
+
+    if (existing && now - existing.firstSeenAt > this.config.maxDurationMs) {
+      return { ok: false, reason: 'duration_exceeded' }
+    }
+    if (state.bytes >= this.config.maxBytesPerToken) {
+      return { ok: false, reason: 'bytes_exceeded' }
+    }
+    if (state.active >= this.config.maxConcurrentPerToken) {
+      return { ok: false, reason: 'token_concurrency' }
+    }
+    if (this.globalActive >= this.config.maxConcurrentGlobal) {
+      return { ok: false, reason: 'global_concurrency' }
+    }
+
+    state.active += 1
+    this.globalActive += 1
+    if (!existing) {
+      this.states.set(tokenKey, state)
+    }
+    return { ok: true }
+  }
+
+  release(tokenKey: string): void {
+    const state = this.states.get(tokenKey)
+    if (!state) return
+    state.active = Math.max(0, state.active - 1)
+    this.globalActive = Math.max(0, this.globalActive - 1)
+  }
+
+  recordBytes(
+    tokenKey: string,
+    bytes: number,
+  ): { allowed: boolean; total: number } {
+    const state = this.states.get(tokenKey)
+    if (!state) return { allowed: false, total: 0 }
+    state.bytes += bytes
+    return { allowed: state.bytes <= this.config.maxBytesPerToken, total: state.bytes }
+  }
+
+  snapshot(tokenKey: string): TokenState | undefined {
+    const state = this.states.get(tokenKey)
+    return state ? { ...state } : undefined
+  }
+
+  private gc(): void {
+    const now = this.now()
+    for (const [key, state] of this.states) {
+      if (state.active === 0 && now - state.firstSeenAt > this.config.maxDurationMs) {
+        this.states.delete(key)
+      }
+    }
+  }
+}
+
+function rateLimitStatus(reason: RateLimitFailureReason): number {
+  if (reason === 'bytes_exceeded' || reason === 'duration_exceeded') {
+    return 410
+  }
+  return 429
 }
 
 export function createAudioProxyHandler(deps: AudioProxyDeps) {
   const maxRedirects = deps.maxRedirects ?? 5
   const headerTimeoutMs = deps.headerTimeoutMs ?? 15_000
+  const lookup = deps.lookup ?? defaultDnsLookup
+  const rateLimiter = new AudioProxyRateLimiter(deps.rateLimits, deps.now)
 
   return async function audioProxyHandler(req: Request, res: Response): Promise<void> {
     if (!['GET', 'HEAD'].includes(req.method)) {
@@ -196,6 +424,18 @@ export function createAudioProxyHandler(deps: AudioProxyDeps) {
       return
     }
 
+    const sigPart = token.split('.')[1] ?? ''
+    const tokenKey = crypto.createHash('sha256').update(sigPart).digest('base64url')
+
+    const acquired = rateLimiter.tryAcquire(tokenKey)
+    if (!acquired.ok) {
+      res.status(rateLimitStatus(acquired.reason)).json({
+        error: 'rate_limited',
+        reason: acquired.reason,
+      })
+      return
+    }
+
     const controller = new AbortController()
     const handleClose = () => controller.abort()
     req.on('close', handleClose)
@@ -207,6 +447,25 @@ export function createAudioProxyHandler(deps: AudioProxyDeps) {
         | null = null
 
       for (let hop = 0; hop <= maxRedirects; hop += 1) {
+        const parsedCurrent = new URL(currentUrl)
+        const currentHost = normalizeHostname(parsedCurrent)
+
+        try {
+          await assertHostResolvesToPublic(currentHost, lookup)
+        } catch (error) {
+          const reason =
+            error instanceof BlockedHostError
+              ? 'upstream_private_address'
+              : 'dns_lookup_failed'
+          console.warn('[audio-proxy] dns guard rejected', {
+            host: currentHost,
+            reason,
+            bvid: verified.claims.bvid,
+          })
+          res.status(502).json({ error: reason })
+          return
+        }
+
         const upstream = await axios.request<Readable>({
           method: req.method as 'GET' | 'HEAD',
           url: currentUrl,
@@ -283,7 +542,26 @@ export function createAudioProxyHandler(deps: AudioProxyDeps) {
         return
       }
 
-      await pipeline(upstreamResp.data, res).catch((error: Error) => {
+      const counter = new PassThrough()
+      let overran = false
+      counter.on('data', (chunk: Buffer) => {
+        const result = rateLimiter.recordBytes(tokenKey, chunk.length)
+        if (!result.allowed && !overran) {
+          overran = true
+          console.warn('[audio-proxy] bytes exceeded, aborting stream', {
+            host: new URL(currentUrl).host,
+            total: result.total,
+            bvid: verified.claims.bvid,
+          })
+          upstreamResp?.data?.destroy?.(new Error('bytes_exceeded'))
+          counter.destroy(new Error('bytes_exceeded'))
+        }
+      })
+
+      await pipeline(upstreamResp.data, counter, res).catch((error: Error) => {
+        if (overran) {
+          return
+        }
         console.warn('[audio-proxy] pipeline error', {
           message: error.message,
           bvid: verified.claims.bvid,
@@ -298,6 +576,7 @@ export function createAudioProxyHandler(deps: AudioProxyDeps) {
       res.status(502).json({ error: 'proxy_request_failed' })
     } finally {
       req.off('close', handleClose)
+      rateLimiter.release(tokenKey)
     }
   }
 }

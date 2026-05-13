@@ -11,6 +11,18 @@ export const DEFAULT_AUDIO_PROXY_ALLOWED_HOST_PATTERNS = [
   '^upos-[a-z0-9-]+\\.(bilivideo|akamaized)\\.(com|cn|net)$',
 ] as const
 
+export const DEFAULT_AUDIO_PROXY_MAX_CONCURRENT_PER_TOKEN = 1
+export const DEFAULT_AUDIO_PROXY_MAX_CONCURRENT_GLOBAL = 4
+export const DEFAULT_AUDIO_PROXY_MAX_BYTES_PER_TOKEN = 500 * 1024 * 1024
+export const DEFAULT_AUDIO_PROXY_MAX_DURATION_MS = 30 * 60 * 1000
+
+export interface AudioProxyRateLimits {
+  maxConcurrentPerToken: number
+  maxConcurrentGlobal: number
+  maxBytesPerToken: number
+  maxDurationMs: number
+}
+
 const ENV_FILES = ['.env.local', '.env']
 let warnedAudioProxySecretFallback = false
 
@@ -153,4 +165,43 @@ export function resolveAudioProxyAllowedHosts(env: NodeJS.ProcessEnv = process.e
   }
 
   return DEFAULT_AUDIO_PROXY_ALLOWED_HOST_PATTERNS.map((pattern) => new RegExp(pattern, 'i'))
+}
+
+function resolvePositiveInt(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  defaultValue: number,
+): number {
+  const parsed = Number.parseInt(env[key]?.trim() || '', 10)
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return defaultValue
+  }
+  return parsed
+}
+
+export function resolveAudioProxyRateLimits(
+  env: NodeJS.ProcessEnv = process.env,
+): AudioProxyRateLimits {
+  return {
+    maxConcurrentPerToken: resolvePositiveInt(
+      env,
+      'AUDIO_PROXY_MAX_CONCURRENT_PER_TOKEN',
+      DEFAULT_AUDIO_PROXY_MAX_CONCURRENT_PER_TOKEN,
+    ),
+    maxConcurrentGlobal: resolvePositiveInt(
+      env,
+      'AUDIO_PROXY_MAX_CONCURRENT_GLOBAL',
+      DEFAULT_AUDIO_PROXY_MAX_CONCURRENT_GLOBAL,
+    ),
+    maxBytesPerToken: resolvePositiveInt(
+      env,
+      'AUDIO_PROXY_MAX_BYTES_PER_TOKEN',
+      DEFAULT_AUDIO_PROXY_MAX_BYTES_PER_TOKEN,
+    ),
+    maxDurationMs: resolvePositiveInt(
+      env,
+      'AUDIO_PROXY_MAX_DURATION_MS',
+      DEFAULT_AUDIO_PROXY_MAX_DURATION_MS,
+    ),
+  }
 }
