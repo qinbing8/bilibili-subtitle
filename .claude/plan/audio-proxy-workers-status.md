@@ -39,6 +39,9 @@
 - 已确认 `wrangler tail` 本身工作正常：手工请求 `https://bbq13560.dpdns.org/api/audio-proxy` 时可稳定看到 `request.inbound` / `request.rejected`。
 - 已确认存在第二类失败：`/api/transcription/start` 返回 `success=true`、`proxyHost=bbq13560.dpdns.org`，但对应任务 `FAILED` 且 Worker 完全无命中日志，说明听悟在真正回拉前就拒绝了该 `fileUrl`。
 - 已在 Vercel 侧 `transcription/start` 路由补最小调试输出：支持通过 `X-Debug-Proxy: 1` 返回 `debugProxy` 字段，并在服务端日志记录 `proxyUrlLength`、`audioUrlLength`、`tokenLength`、`fileNameBytes`、`proxyUrlHash`，用于判断是否是 `fileUrl` 长度或内容格式触发听悟预检拒绝。
+- 已确认一条失败样本的调试值：`proxyUrlLength=1159`、`audioUrlLength=637`、`tokenLength=1114`、`fileNameBytes=25`，且该任务在 Worker 完全无命中日志的情况下直接 `Audio file link invalid.`。
+- 已完成第三轮最小修正：Vercel 端现在只在 token 中保留 `v/u/srcExp/iat/exp` 最小 claims 集合，移除 `mime`、`fn`、`bvid`、`cid`，用于优先验证 `fileUrl` 长度是否是第二类失败主因。
+- 已完成本地回归验证：主工程 `npm run check`、`npm test` 通过，Worker 子工程 `npm run check`、`npm test` 通过。
 
 4. 未完成
 
@@ -46,6 +49,7 @@
 - 还没有拿到新一轮真实回拉日志，因此尚未确认问题究竟落在响应头兼容、音频内容格式识别，还是流式传输行为。
 - 还没有验证“强制 `audio/mp4` + `Content-Disposition`”是否足以让听悟接受该链接。
 - 还没有拿到 Vercel 新调试字段对应的生产返回值，因此当前还不能确认第二类失败是否由 `fileUrl` 长度或 token 负载触发。
+- 还没有拿到“缩短 token 后”的生产 `debugProxy` 返回值，因此暂时无法确认第二类失败是否会随 `proxyUrlLength` 下降而消失。
 - 还没有做长视频端到端验证。
 
 5. 关键文件
