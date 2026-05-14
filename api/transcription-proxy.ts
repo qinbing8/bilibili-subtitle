@@ -16,6 +16,21 @@ export interface TranscriptionAudioInput {
   expiresAt: string
 }
 
+export function buildControlAudioInput(sampleUrl: string, nowMs = Date.now()): TranscriptionAudioInput {
+  const parsed = new URL(sampleUrl)
+  const pathSegments = parsed.pathname.split('/').filter(Boolean)
+  const fileName = pathSegments[pathSegments.length - 1] || 'tingwu-control.m4a'
+
+  return {
+    bvid: 'TINGWUCONTROL',
+    audioUrl: sampleUrl,
+    audioFormat: 'm4a',
+    mimeType: 'audio/mp4',
+    fileName,
+    expiresAt: new Date(nowMs + 24 * 60 * 60 * 1000).toISOString(),
+  }
+}
+
 function buildProxyFileName(audio: TranscriptionAudioInput): string {
   const base = audio.bvid.trim() || 'audio'
   const ext = audio.audioFormat.trim().toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin'

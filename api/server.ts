@@ -17,9 +17,10 @@ import {
   resolvePublicProxyBaseUrl,
 } from './dev-config.js'
 import {
+  assertLikelyPublicHttpUrl,
   createAudioProxyHandler,
 } from './audio-proxy.js'
-import { buildAudioProxyTaskPayload } from './transcription-proxy.js'
+import { buildAudioProxyTaskPayload, buildControlAudioInput } from './transcription-proxy.js'
 import { buildCreateTaskRequestBody, buildCreateTaskRequestQuery } from './tingwu-task.js'
 
 loadLocalEnv()
@@ -711,6 +712,91 @@ app.post('/api/download-video', async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : '获取音频失败',
+    })
+  }
+})
+
+app.post('/api/transcription/control-start', async (req, res) => {
+  const { sampleUrl, mode, language, diarization, textPolish } = req.body || {}
+  if (!sampleUrl) {
+    return res.status(400).json({ success: false, error: '缺少 sampleUrl' })
+  }
+  if (!['direct', 'proxy'].includes(mode)) {
+    return res.status(400).json({ success: false, error: 'mode 仅支持 direct 或 proxy' })
+  }
+
+  try {
+    assertLikelyPublicHttpUrl(sampleUrl)
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'sampleUrl 非法',
+    })
+  }
+
+  try {
+    const normalizedSampleUrl = new URL(sampleUrl).toString()
+    const sampleHost = new URL(normalizedSampleUrl).host
+    const controlAudio = buildControlAudioInput(normalizedSampleUrl)
+    const includeDebugProxy = req.get('X-Debug-Proxy') === '1'
+
+    let fileUrl = normalizedSampleUrl
+    let proxyData: ReturnType<typeof buildAudioProxyTaskPayload> | null = null
+    if (mode === 'proxy') {
+      proxyData = buildAudioProxyTaskPayload(controlAudio)
+      fileUrl = proxyData.proxyUrl
+    }
+
+    const taskId = await createTingwuTask(fileUrl, language, {
+      diarization: !!diarization,
+      textPolish: !!textPolish,
+    })
+
+    console.log('[transcription/control-start]', {
+      taskId,
+      mode,
+      sampleHost,
+      proxyHost: proxyData?.proxyHost,
+      sampleUrlLength: normalizedSampleUrl.length,
+      proxyUrlLength: proxyData?.proxyUrlLength,
+      tokenLength: proxyData?.tokenLength,
+      includeDebugProxy,
+    })
+
+    res.setHeader('Cache-Control', 'no-store')
+    return res.json({
+      success: true,
+      data: {
+        taskId,
+        mode,
+        sampleHost,
+        audioHost: sampleHost,
+        sampleUrlLength: normalizedSampleUrl.length,
+        ...(proxyData
+          ? {
+              proxyHost: proxyData.proxyHost,
+              proxyExpiresAt: proxyData.proxyExpiresAt,
+              sourceExpiresAt: proxyData.sourceExpiresAt,
+              ...(includeDebugProxy
+                ? {
+                    debugProxy: {
+                      proxyUrl: proxyData.proxyUrl,
+                      proxyUrlLength: proxyData.proxyUrlLength,
+                      audioUrlLength: proxyData.audioUrlLength,
+                      tokenLength: proxyData.tokenLength,
+                      fileNameBytes: proxyData.fileNameBytes,
+                      proxyUrlHash: proxyData.proxyUrlHash,
+                    },
+                  }
+                : {}),
+            }
+          : {}),
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : '创建 control 任务失败',
     })
   }
 })
