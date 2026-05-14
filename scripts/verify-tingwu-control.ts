@@ -11,7 +11,7 @@ import {
 } from './verify-tingwu-control-lib.ts'
 
 const DEFAULT_BASE_URL = 'https://bilibili-subtitle-theta.vercel.app'
-const DEFAULT_SAMPLE_PATH = '/tingwu-control.m4a'
+const DEFAULT_SAMPLE_PATH = '/tingwu-control-48k.m4a'
 
 function printUsage() {
   console.log(`用法:
@@ -20,7 +20,7 @@ function printUsage() {
 
 可选参数:
   --base-url <url>
-  --sample-path </tingwu-control.m4a>
+  --sample-path </tingwu-control-48k.m4a>
   --mode <both|direct|proxy>
   --language <auto|cn|en...>
   --poll-interval-sec <number>

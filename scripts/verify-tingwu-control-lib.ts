@@ -64,7 +64,7 @@ function normalizeBaseUrl(url: string): string {
 function normalizeSamplePath(samplePath: string): string {
   const trimmed = samplePath.trim()
   if (!trimmed) {
-    return '/tingwu-control.m4a'
+    return '/tingwu-control-48k.m4a'
   }
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
 }

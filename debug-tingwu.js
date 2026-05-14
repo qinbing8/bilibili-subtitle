@@ -1,12 +1,14 @@
 import axios from 'axios';
 
+const apiBase = process.env.API_BASE_URL || `http://localhost:${process.env.BACKEND_PORT || '9091'}`;
+
 async function debugTingwuAPI() {
   try {
     console.log('Testing Tongyi Tingwu processing...');
     
     // First, download the video
     console.log('Step 1: Downloading video...');
-    const downloadResponse = await axios.post('http://localhost:9090/api/download-video', {
+    const downloadResponse = await axios.post(`${apiBase}/api/download-video`, {
       bilibiliUrl: 'https://www.bilibili.com/video/BV1GdCsBPEvE/?share_source=copy_web&vd_source=eb46e9ffc765ae89070146d6c4acb4e7'
     });
     
@@ -21,7 +23,7 @@ async function debugTingwuAPI() {
       console.log('Access Key present:', !!accessKey);
       console.log('Access Key starts with sk-:', accessKey.startsWith('sk-'));
       
-      const tingwuResponse = await axios.post('http://localhost:9090/api/tingwu-process', {
+      const tingwuResponse = await axios.post(`${apiBase}/api/tingwu-process`, {
         videoUrl: videoUrl,
         accessKey: accessKey,
         language: 'auto'

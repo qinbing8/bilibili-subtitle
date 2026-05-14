@@ -1,6 +1,6 @@
 param(
   [string]$BaseUrl = 'https://bilibili-subtitle-theta.vercel.app',
-  [string]$SamplePath = '/tingwu-control.m4a',
+  [string]$SamplePath = '/tingwu-control-48k.m4a',
   [ValidateSet('both', 'direct', 'proxy')]
   [string]$Mode = 'proxy',
   [string]$Language = 'auto',
