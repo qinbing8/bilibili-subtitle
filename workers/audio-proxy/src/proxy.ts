@@ -4,6 +4,7 @@ export interface ProxyDeps {
   maxRedirects?: number
   preferredContentType?: string
   fileName?: string
+  force200ForInitialRange?: boolean
   debugLog?: (event: string, details: Record<string, unknown>) => void
 }
 
@@ -21,6 +22,10 @@ function jsonResponse(status: number, body: Record<string, unknown>): Response {
     status,
     headers: { 'content-type': 'application/json' },
   })
+}
+
+function emptyResponse(status: number, headers: Headers): Response {
+  return new Response(null, { status, headers })
 }
 
 function normalizeHostname(url: URL): string {
@@ -53,7 +58,7 @@ function buildUpstreamHeaders(request: Request, deps: ProxyDeps): Headers {
   headers.set('Accept-Encoding', 'identity')
 
   const range = request.headers.get('range')
-  if (range) {
+  if (range && !shouldForceFullResponse(request, deps)) {
     headers.set('Range', range)
   }
 
@@ -63,6 +68,26 @@ function buildUpstreamHeaders(request: Request, deps: ProxyDeps): Headers {
   }
 
   return headers
+}
+
+function shouldForceFullResponse(request: Request, deps: ProxyDeps): boolean {
+  return deps.force200ForInitialRange === true &&
+    request.method === 'GET' &&
+    request.headers.get('range') === 'bytes=0-'
+}
+
+function parseOpenEndedRangeStart(rangeHeader: string | null): number | null {
+  if (!rangeHeader) {
+    return null
+  }
+
+  const match = /^bytes=(\d+)-$/.exec(rangeHeader.trim())
+  if (!match) {
+    return null
+  }
+
+  const parsed = Number.parseInt(match[1], 10)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function buildContentDisposition(fileName: string): string {
@@ -78,6 +103,9 @@ function copyResponseHeaders(upstream: Response, deps: ProxyDeps): Headers {
     if (value) {
       headers.set(header, value)
     }
+  }
+  if (!headers.get('accept-ranges')) {
+    headers.set('accept-ranges', 'bytes')
   }
   if (deps.preferredContentType) {
     headers.set('content-type', deps.preferredContentType)
@@ -100,6 +128,39 @@ function mapUpstreamError(upstream: Response): Response | null {
     return jsonResponse(502, { error: 'unexpected_status', status: upstream.status })
   }
   return null
+}
+
+function mapUnsatisfiedRange(
+  request: Request,
+  upstream: Response,
+  headers: Headers,
+  deps: ProxyDeps,
+): Response | null {
+  const rangeStart = parseOpenEndedRangeStart(request.headers.get('range'))
+  const contentLength = Number.parseInt(upstream.headers.get('content-length') || '', 10)
+  if (rangeStart === null || !Number.isFinite(contentLength) || rangeStart < contentLength) {
+    return null
+  }
+
+  headers.delete('content-length')
+  headers.delete('content-range')
+  headers.set('accept-ranges', 'bytes')
+  headers.set('content-range', `bytes */${contentLength}`)
+  logDebug(deps, 'proxy.range_unsatisfied', {
+    requestedRange: request.headers.get('range'),
+    contentLength,
+  })
+  return emptyResponse(416, headers)
+}
+
+function buildUpstream416Response(upstream: Response): Response {
+  const headers = new Headers()
+  const contentRange = upstream.headers.get('content-range')
+  if (contentRange) {
+    headers.set('content-range', contentRange)
+  }
+  headers.set('accept-ranges', upstream.headers.get('accept-ranges') || 'bytes')
+  return emptyResponse(416, headers)
 }
 
 function bindAbortSignal(request: Request): AbortController {
@@ -135,6 +196,7 @@ async function fetchFollowingRedirects(
       url: currentUrl,
       status: upstream.status,
       location: upstream.headers.get('location'),
+      forwardedRange: buildUpstreamHeaders(request, deps).get('range'),
     })
 
     const location = upstream.headers.get('location')
@@ -252,6 +314,12 @@ export async function streamUpstream(
     lastModified: result.upstream.headers.get('last-modified'),
   })
 
+  if (result.upstream.status === 416) {
+    const response = buildUpstream416Response(result.upstream)
+    await result.upstream.body?.cancel()
+    return response
+  }
+
   const mappedError = mapUpstreamError(result.upstream)
   if (mappedError) {
     await result.upstream.body?.cancel()
@@ -259,6 +327,11 @@ export async function streamUpstream(
   }
 
   const headers = copyResponseHeaders(result.upstream, deps)
+  const unsatisfiedRange = mapUnsatisfiedRange(request, result.upstream, headers, deps)
+  if (unsatisfiedRange) {
+    await result.upstream.body?.cancel()
+    return unsatisfiedRange
+  }
   logDebug(deps, 'proxy.response_headers', {
     servedContentType: headers.get('content-type'),
     contentDisposition: headers.get('content-disposition'),

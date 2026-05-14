@@ -41,6 +41,15 @@ npm test
 npx wrangler deploy --dry-run
 ```
 
+如果是线上联调，不要只靠手工 `curl`。优先使用根目录自动化命令：
+
+```powershell
+npm run verify:transcription
+npm run verify:transcription:tail
+```
+
+当前调试目标、已排除项和下一步排查方向见 [DEBUGGING.md](./DEBUGGING.md)。
+
 ## 本地临时运行
 
 本命令会启动短期调试服务，只用于手工测试 Worker，不是项目后端：

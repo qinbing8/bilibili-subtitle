@@ -29,8 +29,12 @@ function makeToken(
   )
 }
 
-async function workerFetch(request: Request, secret = 'worker-secret'): Promise<Response> {
-  return worker.fetch(request, { AUDIO_PROXY_TOKEN_SECRET: secret })
+async function workerFetch(
+  request: Request,
+  secret = 'worker-secret',
+  extraEnv: Record<string, string> = {},
+): Promise<Response> {
+  return worker.fetch(request, { AUDIO_PROXY_TOKEN_SECRET: secret, ...extraEnv })
 }
 
 test('Worker 暴露健康检查并限制代理路径', async () => {
@@ -137,6 +141,131 @@ test('Worker 优先使用 token 中声明的音频 MIME 和文件名暴露响应
     assert.match(contentDisposition, /^inline; filename=".*"; filename\*=UTF-8''/)
     assert.match(contentDisposition, new RegExp(encodeURIComponent('示例音频.m4a')))
     assert.equal(await response.text(), 'abc')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Worker 在上游缺少 Accept-Ranges 时仍显式返回 bytes', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response('abc', {
+      status: 206,
+      headers: {
+        'content-type': 'audio/mp4',
+        'content-range': 'bytes 0-2/3',
+        'content-length': '3',
+      },
+    })
+
+  try {
+    const token = makeToken('https://upos-sz-mirrorakam.akamaized.net/abc.m4s')
+    const response = await workerFetch(
+      new Request(`https://example.workers.dev/api/audio-proxy?t=${encodeURIComponent(token)}`),
+    )
+
+    assert.equal(response.status, 206)
+    assert.equal(response.headers.get('accept-ranges'), 'bytes')
+    assert.equal(await response.text(), 'abc')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Worker 可选地把 bytes=0- 首包请求升级为 200 全量响应', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ url: string; range: string | null }> = []
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    calls.push({
+      url: String(input),
+      range: headers.get('range'),
+    })
+    return new Response('full-audio', {
+      status: 200,
+      headers: {
+        'content-type': 'audio/mp4',
+        'content-length': '10',
+      },
+    })
+  }
+
+  try {
+    const token = makeToken('https://upos-sz-mirrorakam.akamaized.net/abc.m4s')
+    const response = await workerFetch(
+      new Request(`https://example.workers.dev/api/audio-proxy?t=${encodeURIComponent(token)}`, {
+        headers: { Range: 'bytes=0-' },
+      }),
+      'worker-secret',
+      { FORCE_200_FOR_INITIAL_RANGE: '1' },
+    )
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'audio/mp4')
+    assert.equal(response.headers.get('content-range'), null)
+    assert.equal(await response.text(), 'full-audio')
+    assert.deepEqual(calls, [
+      {
+        url: 'https://upos-sz-mirrorakam.akamaized.net/abc.m4s',
+        range: null,
+      },
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Worker 对明显越界的 open-ended Range 请求修正为 416', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response('full-audio', {
+      status: 200,
+      headers: {
+        'content-type': 'audio/mp4',
+        'content-length': '10',
+      },
+    })
+
+  try {
+    const token = makeToken('https://upos-sz-mirrorakam.akamaized.net/abc.m4s')
+    const response = await workerFetch(
+      new Request(`https://example.workers.dev/api/audio-proxy?t=${encodeURIComponent(token)}`, {
+        headers: { Range: 'bytes=999999999999-' },
+      }),
+    )
+
+    assert.equal(response.status, 416)
+    assert.equal(response.headers.get('content-range'), 'bytes */10')
+    assert.equal(response.headers.get('accept-ranges'), 'bytes')
+    assert.equal(await response.text(), '')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Worker 透传上游 416 Range Not Satisfiable', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response(null, {
+      status: 416,
+      headers: {
+        'content-range': 'bytes */10',
+        'accept-ranges': 'bytes',
+      },
+    })
+
+  try {
+    const token = makeToken('https://upos-sz-mirrorakam.akamaized.net/abc.m4s')
+    const response = await workerFetch(
+      new Request(`https://example.workers.dev/api/audio-proxy?t=${encodeURIComponent(token)}`, {
+        headers: { Range: 'bytes=999999999999-' },
+      }),
+    )
+
+    assert.equal(response.status, 416)
+    assert.equal(response.headers.get('content-range'), 'bytes */10')
+    assert.equal(response.headers.get('accept-ranges'), 'bytes')
+    assert.equal(await response.text(), '')
   } finally {
     globalThis.fetch = originalFetch
   }

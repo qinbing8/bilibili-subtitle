@@ -116,17 +116,7 @@ function Invoke-ProbeRequest {
     [int]$TimeoutSec = 30
   )
 
-  try {
-    return Invoke-WebRequest -Uri $Uri -Headers @{ Range = 'bytes=0-1023' } -TimeoutSec $TimeoutSec
-  } catch {
-    $message = $_.Exception.Message
-    $response = Get-OptionalMemberValue -InputObject $_.Exception -Name 'Response'
-    if ($response) {
-      $statusCode = [int]$response.StatusCode
-      throw "HTTP $statusCode $message"
-    }
-    throw $message
-  }
+  return Invoke-WebRequest -Uri $Uri -Headers @{ Range = 'bytes=0-1023' } -SkipHttpErrorCheck -TimeoutSec $TimeoutSec
 }
 
 function Get-OptionalPropertyValue {
@@ -176,14 +166,17 @@ if (-not $start.success -or -not $start.data.taskId) {
 }
 
 Write-Host "[start] taskId=$($start.data.taskId) proxyHost=$($start.data.proxyHost) audioHost=$($start.data.audioHost)"
-if ($start.data.debugProxy) {
-  Write-Host "[start] proxyUrlLength=$($start.data.debugProxy.proxyUrlLength) tokenLength=$($start.data.debugProxy.tokenLength) audioUrlLength=$($start.data.debugProxy.audioUrlLength) proxyUrlHash=$($start.data.debugProxy.proxyUrlHash)"
+$debugProxy = Get-OptionalPropertyValue -InputObject $start.data -Name 'debugProxy'
+if ($debugProxy) {
+  Write-Host "[start] proxyUrlLength=$($debugProxy.proxyUrlLength) tokenLength=$($debugProxy.tokenLength) audioUrlLength=$($debugProxy.audioUrlLength) proxyUrlHash=$($debugProxy.proxyUrlHash)"
 }
 
-if ($start.data.debugProxy -and $start.data.debugProxy.proxyUrl) {
+$debugProxyUrl = Get-OptionalPropertyValue -InputObject $debugProxy -Name 'proxyUrl'
+if ($debugProxyUrl) {
   try {
-    $probe = Invoke-ProbeRequest -Uri $start.data.debugProxy.proxyUrl -TimeoutSec $RequestTimeoutSec
-    Write-Host "[probe] status=$([int]$probe.StatusCode) contentType=$($probe.Headers['Content-Type']) contentRange=$($probe.Headers['Content-Range']) acceptRanges=$($probe.Headers['Accept-Ranges']) contentDisposition=$($probe.Headers['Content-Disposition'])"
+    $probe = Invoke-ProbeRequest -Uri $debugProxyUrl -TimeoutSec $RequestTimeoutSec
+    $probeContent = if ($probe.Content) { " content=$($probe.Content)" } else { '' }
+    Write-Host "[probe] status=$([int]$probe.StatusCode) contentType=$($probe.Headers['Content-Type']) contentRange=$($probe.Headers['Content-Range']) acceptRanges=$($probe.Headers['Accept-Ranges']) contentDisposition=$($probe.Headers['Content-Disposition'])$probeContent"
   } catch {
     Write-Host "[probe] error=$($_.Exception.Message)"
   }

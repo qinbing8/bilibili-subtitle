@@ -173,6 +173,65 @@ npx wrangler deploy --dry-run
 
 若 Vercel 任务失败且 Worker 完全没有命中，说明听悟 cn-beijing 也无法访问 `workers.dev`，需要切换到自定义域名或阿里云函数计算方案。
 
+## 重复问题记录：audio-proxy 调试必须先跑自动化探测
+
+- 标题：`audio-proxy` 联调优先使用自动化脚本
+- 触发信号：
+  - 连续多轮手工复制 `curl`、`status` 轮询、debug proxy URL 探测
+  - 同一轮排查中无法稳定对比 `taskId`、`tokenLength`、代理响应头与最终错误
+- 根因 / 约束：
+  - 端到端链路跨 Vercel、Cloudflare Worker、Bilibili 上游、阿里云听悟，手工操作很容易遗漏某一步或拿错一轮证据。
+  - `Audio file link invalid.`、`File cannot be read.` 这类终态错误过于宽泛，必须结合代理探测结果一起看。
+- 正确做法：
+  - 统一使用项目根目录命令：
+
+```powershell
+npm run verify:transcription -- -MaxWaitSec 60
+```
+
+  - 该脚本负责自动完成：
+    - 发起 `/api/transcription/start`
+    - 输出 `taskId`、`proxyHost`、`audioHost`
+    - 输出 `proxyUrlLength`、`tokenLength`、`proxyUrlHash`
+    - 探测 `debugProxy.proxyUrl` 并打印 `status`、`contentType`、`contentRange`、`acceptRanges`、`contentDisposition`
+    - 轮询 `/api/transcription/status` 到终态
+- 验证方式：
+  - `COMPLETED` 返回码为 `0`
+  - `FAILED` 返回码为 `2`
+  - `TIMEOUT` 返回码为 `3`
+  - 若 `probe` 已显示代理返回异常头或异常 body，应优先处理代理，不要继续手工重试同一路径
+- 适用范围：
+  - `api/transcription/start`
+  - `api/transcription/status`
+  - `workers/audio-proxy/*`
+
+## 重复问题记录：Worker redeploy 后先验 secret 再排查 HTTP 语义
+
+- 标题：Worker 部署后优先排除 `AUDIO_PROXY_TOKEN_SECRET` 缺失
+- 触发信号：
+  - `debugProxy.proxyUrl` 探测返回 `500 {"error":"config_missing","key":"AUDIO_PROXY_TOKEN_SECRET"}`
+  - 听悟终态从 `Audio file link invalid.` 变成 `File cannot be read.`
+- 根因 / 约束：
+  - Worker 运行时若缺少 `AUDIO_PROXY_TOKEN_SECRET`，会在验签前直接返回 `500`。
+  - 听悟侧只会把这类回拉失败折叠成“文件无法读取”，很容易误判成 `206`、`Accept-Ranges` 或文件格式兼容性问题。
+- 正确做法：
+  - 每次 `wrangler deploy` 后，先跑一次：
+
+```powershell
+npm run verify:transcription -- -MaxWaitSec 60
+```
+
+  - 若 `probe` 显示 `config_missing`，立即重新注入 Worker secret，再继续任何 `Range` / `206` / `m4s` 实验。
+  - 只有在 `probe` 已经返回正常 `200/206` 且头部可见时，才进入 Worker HTTP 语义排查。
+- 验证方式：
+  - `probe` 不再返回 `config_missing`
+  - `probe` 至少返回可用的 `status`、`contentType`、`contentRange`
+  - 此后再观察听悟终态是否仍为 `FAILED`
+- 适用范围：
+  - `workers/audio-proxy/src/index.ts`
+  - `workers/audio-proxy/src/proxy.ts`
+  - Cloudflare Worker 发布与回归验证流程
+
 ## 历史 cloudflared 联调步骤（已被 Worker 方案取代）
 
 以下步骤用于完成当前公网代理方案下的 4 到 8 链路验证。前提是你已经手工启动本地后端，并准备好：
@@ -468,3 +527,41 @@ npm run verify:transcription -- -VideoUrl 'https://www.bilibili.com/video/BV...'
 - 所有 Vercel 生产联调
 - 所有 Cloudflare Worker 音频代理联调
 - 所有需要比较不同轮次 `tokenLength` / `proxyUrlLength` / proxy 响应头的排障场景
+
+### 记录 005：Worker 联调要区分“本地 probe”与“阿里云真实请求”
+
+触发信号：
+
+- 开着 `X-Debug-Proxy` 时，Cloudflare tail 同时出现本机 PowerShell 请求和阿里云 `Lavf/59.16.100` 请求
+- 同一轮里既看到 `bytes=0-1023`，又看到 `bytes=0-` / 超大 `Range`，很容易误判
+- 排查 `200 / 206 / 416` 序列时，无法快速分清哪条是本地探针，哪条是听悟真实请求
+
+根因 / 约束：
+
+- `verify:transcription` 默认会主动探测 `debugProxy.proxyUrl`
+- 这个本地探针会额外产生一条 `Range: bytes=0-1023` 请求
+- 而听悟真实请求的 `User-Agent` 是 `Lavf/59.16.100`，其请求序列才是真正需要观察的证据
+
+正确做法：
+
+- 只看听悟真实请求时，统一使用：
+
+```powershell
+npm run verify:transcription:tail
+```
+
+- 该脚本默认会关闭本地 probe，并自动执行：
+  - 启动 `wrangler tail`
+  - 运行 `verify-transcription.ps1 -NoDebugProxy`
+  - 摘要输出阿里云请求里的 `range` / `status`
+- 如果只是做常规链路检查，不需要 tail，再用 `npm run verify:transcription`
+
+验证方式：
+
+- tail 摘要里应只出现 `Lavf/59.16.100` / `Aliyun Computing Co., LTD` 对应的请求
+- 不应再混入本机 `PowerShell/7.x` 的 `bytes=0-1023` 探针请求
+
+适用范围：
+
+- 所有需要分析 Cloudflare Worker 真实请求序列的联调场景
+- 所有需要判断 `200 / 206 / 416` 是否被听悟接受的排障场景

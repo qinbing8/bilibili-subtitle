@@ -6,6 +6,7 @@ export interface Env {
   AUDIO_PROXY_TOKEN_SECRET: string
   ALLOWED_HOSTS?: string
   DEBUG_AUDIO_PROXY?: string
+  FORCE_200_FOR_INITIAL_RANGE?: string
 }
 
 function jsonResponse(status: number, body: Record<string, unknown>, headers?: HeadersInit) {
@@ -113,6 +114,7 @@ export default {
       upstreamHeaders: () => BILIBILI_HEADERS,
       preferredContentType: verified.claims.mime,
       fileName: verified.claims.fn,
+      force200ForInitialRange: env.FORCE_200_FOR_INITIAL_RANGE?.trim() === '1',
       debugLog: (event, details) => logDebug(request, debugEnabled, event, details),
     })
   },
