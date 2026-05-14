@@ -41,6 +41,8 @@
 - 已在 Vercel 侧 `transcription/start` 路由补最小调试输出：支持通过 `X-Debug-Proxy: 1` 返回 `debugProxy` 字段，并在服务端日志记录 `proxyUrlLength`、`audioUrlLength`、`tokenLength`、`fileNameBytes`、`proxyUrlHash`，用于判断是否是 `fileUrl` 长度或内容格式触发听悟预检拒绝。
 - 已确认一条失败样本的调试值：`proxyUrlLength=1159`、`audioUrlLength=637`、`tokenLength=1114`、`fileNameBytes=25`，且该任务在 Worker 完全无命中日志的情况下直接 `Audio file link invalid.`。
 - 已完成第三轮最小修正：Vercel 端现在只在 token 中保留 `v/u/srcExp/iat/exp` 最小 claims 集合，移除 `mime`、`fn`、`bvid`、`cid`，用于优先验证 `fileUrl` 长度是否是第二类失败主因。
+- 已确认仅删除可选字段后，`proxyUrlLength` 从 `1159` 降到 `1032`，但仍偏长，说明真正的主问题是“URL 需要进一步压缩”，而不是单纯删掉文件名等附加信息。
+- 已完成第四轮最小修正：代理 token 改为紧凑字段编码，保留 `u/srcExp/iat/exp/mime/fn` 的语义，但移除 `bvid/cid` 并把字段名压短，以同时兼顾“缩短 `fileUrl`”和“保留 Worker 侧 `Content-Type` / `Content-Disposition` 覆盖能力”。
 - 已完成本地回归验证：主工程 `npm run check`、`npm test` 通过，Worker 子工程 `npm run check`、`npm test` 通过。
 
 4. 未完成
@@ -50,6 +52,7 @@
 - 还没有验证“强制 `audio/mp4` + `Content-Disposition`”是否足以让听悟接受该链接。
 - 还没有拿到 Vercel 新调试字段对应的生产返回值，因此当前还不能确认第二类失败是否由 `fileUrl` 长度或 token 负载触发。
 - 还没有拿到“缩短 token 后”的生产 `debugProxy` 返回值，因此暂时无法确认第二类失败是否会随 `proxyUrlLength` 下降而消失。
+- 还没有拿到“紧凑字段 token”上线后的生产 `debugProxy` 返回值，因此还不能确认是否已经压到听悟可接受的阈值以下。
 - 还没有做长视频端到端验证。
 
 5. 关键文件

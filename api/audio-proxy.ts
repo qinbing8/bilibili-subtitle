@@ -22,6 +22,15 @@ export interface AudioProxyClaims {
   cid?: string
 }
 
+interface CompactAudioProxyClaims {
+  u: string
+  i: number
+  e: number
+  s: number
+  m?: string
+  f?: string
+}
+
 type AudioProxyVerifyFailure =
   | 'missing'
   | 'malformed'
@@ -179,15 +188,73 @@ export function signAudioProxyToken(
   ttlSec: number,
   nowSec = Math.floor(Date.now() / 1000),
 ): string {
+  const compactClaims: CompactAudioProxyClaims = {
+    u: claims.u,
+    i: nowSec,
+    e: nowSec + ttlSec,
+    s: claims.srcExp,
+    ...(claims.mime ? { m: claims.mime } : {}),
+    ...(claims.fn ? { f: claims.fn } : {}),
+  }
   const payload = Buffer.from(
-    JSON.stringify({
-      ...claims,
-      iat: nowSec,
-      exp: nowSec + ttlSec,
-    } satisfies AudioProxyClaims),
+    JSON.stringify(compactClaims),
   ).toString('base64url')
 
   return `${payload}.${signPayload(payload, secret)}`
+}
+
+function toCanonicalClaims(parsed: unknown): AudioProxyClaims | null {
+  if (!parsed || typeof parsed !== 'object') {
+    return null
+  }
+
+  const claims = parsed as Partial<AudioProxyClaims & CompactAudioProxyClaims>
+  if (
+    claims.v === 1 &&
+    typeof claims.u === 'string' &&
+    claims.u.length > 0 &&
+    Number.isFinite(claims.iat) &&
+    Number.isFinite(claims.exp) &&
+    Number.isFinite(claims.srcExp)
+  ) {
+    const iat = Number(claims.iat)
+    const exp = Number(claims.exp)
+    const srcExp = Number(claims.srcExp)
+    return {
+      v: 1,
+      u: claims.u,
+      iat,
+      exp,
+      srcExp,
+      ...(typeof claims.mime === 'string' ? { mime: claims.mime } : {}),
+      ...(typeof claims.fn === 'string' ? { fn: claims.fn } : {}),
+      ...(typeof claims.bvid === 'string' ? { bvid: claims.bvid } : {}),
+      ...(typeof claims.cid === 'string' ? { cid: claims.cid } : {}),
+    }
+  }
+
+  if (
+    typeof claims.u === 'string' &&
+    claims.u.length > 0 &&
+    Number.isFinite(claims.i) &&
+    Number.isFinite(claims.e) &&
+    Number.isFinite(claims.s)
+  ) {
+    const iat = Number(claims.i)
+    const exp = Number(claims.e)
+    const srcExp = Number(claims.s)
+    return {
+      v: 1,
+      u: claims.u,
+      iat,
+      exp,
+      srcExp,
+      ...(typeof claims.m === 'string' ? { mime: claims.m } : {}),
+      ...(typeof claims.f === 'string' ? { fn: claims.f } : {}),
+    }
+  }
+
+  return null
 }
 
 export function verifyAudioProxyToken(
@@ -215,30 +282,22 @@ export function verifyAudioProxyToken(
     return { ok: false, reason: 'malformed' }
   }
 
-  if (!parsed || typeof parsed !== 'object') {
-    return { ok: false, reason: 'malformed' }
-  }
-
-  const claims = parsed as Partial<AudioProxyClaims>
+  const claims = toCanonicalClaims(parsed)
   if (
+    !claims ||
     claims.v !== 1 ||
-    typeof claims.u !== 'string' ||
-    claims.u.length === 0 ||
-    !Number.isFinite(claims.iat) ||
-    !Number.isFinite(claims.exp) ||
-    !Number.isFinite(claims.srcExp) ||
-    (claims.exp as number) <= (claims.iat as number)
+    claims.exp <= claims.iat
   ) {
     return { ok: false, reason: 'malformed' }
   }
 
-  if ((claims.exp as number) <= nowSec) {
+  if (claims.exp <= nowSec) {
     return { ok: false, reason: 'tokenExpired' }
   }
-  if ((claims.srcExp as number) <= nowSec * 1000) {
+  if (claims.srcExp <= nowSec * 1000) {
     return { ok: false, reason: 'sourceExpired' }
   }
-  return { ok: true, claims: claims as AudioProxyClaims }
+  return { ok: true, claims }
 }
 
 export function assertLikelyPublicHttpUrl(url: string): void {

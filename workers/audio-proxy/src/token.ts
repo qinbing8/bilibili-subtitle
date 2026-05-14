@@ -10,6 +10,15 @@ export interface AudioProxyClaims {
   cid?: string
 }
 
+interface CompactAudioProxyClaims {
+  u: string
+  i: number
+  e: number
+  s: number
+  m?: string
+  f?: string
+}
+
 export type VerifyResult =
   | { ok: true; claims: AudioProxyClaims }
   | {
@@ -64,7 +73,53 @@ async function signPayload(payload: string, secret: string): Promise<string> {
 
 function parseClaims(payload: string): AudioProxyClaims | null {
   try {
-    return JSON.parse(new TextDecoder().decode(base64UrlToBytes(payload))) as AudioProxyClaims
+    const parsed = JSON.parse(new TextDecoder().decode(base64UrlToBytes(payload))) as Partial<
+      AudioProxyClaims & CompactAudioProxyClaims
+    >
+    if (
+      parsed.v === 1 &&
+      typeof parsed.u === 'string' &&
+      parsed.u.length > 0 &&
+      Number.isFinite(parsed.iat) &&
+      Number.isFinite(parsed.exp) &&
+      Number.isFinite(parsed.srcExp)
+    ) {
+      const iat = Number(parsed.iat)
+      const exp = Number(parsed.exp)
+      const srcExp = Number(parsed.srcExp)
+      return {
+        v: 1,
+        u: parsed.u,
+        iat,
+        exp,
+        srcExp,
+        ...(typeof parsed.mime === 'string' ? { mime: parsed.mime } : {}),
+        ...(typeof parsed.fn === 'string' ? { fn: parsed.fn } : {}),
+        ...(typeof parsed.bvid === 'string' ? { bvid: parsed.bvid } : {}),
+        ...(typeof parsed.cid === 'string' ? { cid: parsed.cid } : {}),
+      }
+    }
+    if (
+      typeof parsed.u === 'string' &&
+      parsed.u.length > 0 &&
+      Number.isFinite(parsed.i) &&
+      Number.isFinite(parsed.e) &&
+      Number.isFinite(parsed.s)
+    ) {
+      const iat = Number(parsed.i)
+      const exp = Number(parsed.e)
+      const srcExp = Number(parsed.s)
+      return {
+        v: 1,
+        u: parsed.u,
+        iat,
+        exp,
+        srcExp,
+        ...(typeof parsed.m === 'string' ? { mime: parsed.m } : {}),
+        ...(typeof parsed.f === 'string' ? { fn: parsed.f } : {}),
+      }
+    }
+    return null
   } catch {
     return null
   }
