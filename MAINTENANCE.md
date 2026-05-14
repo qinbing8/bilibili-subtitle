@@ -565,3 +565,85 @@ npm run verify:transcription:tail
 
 - 所有需要分析 Cloudflare Worker 真实请求序列的联调场景
 - 所有需要判断 `200 / 206 / 416` 是否被听悟接受的排障场景
+
+### 记录 006：先跑标准 m4a 对照实验，再继续折腾 Worker Range 语义
+
+触发信号：
+
+- Worker 已经命中阿里云真实请求
+- tail 已出现 `Range: bytes=0-`、超大越界 `Range` 等证据
+- `200 / 416` 语义修正后，听悟仍报 `Audio file link invalid.`
+
+根因 / 约束：
+
+- 阿里云官方错误关键词里，`TSC.AudioFileLink`、`TSC.FileError`、`TSC.ContentLengthCheckFailed`、`TSC.AudioFormat`、`TSC.FileType` 覆盖了“公网可达性”“可读性”“长度检查”“格式/扩展名”“不支持格式”等不同问题。
+- 当 Worker 已经能稳定返回可用 HTTP 语义时，继续盲改 `206` / `Accept-Ranges` / `Content-Range` 的收益很低。
+- 当前剩余高价值假设通常在音频源文件形态，例如 B 站 `m4s` 是否被听悟当成非标准 `m4a`。
+
+正确做法：
+
+- 统一先跑标准 `m4a` 对照实验：
+
+```powershell
+npm run verify:tingwu:control
+```
+
+- 判读顺序固定为：
+  - `direct PASS` + `proxy PASS`：更像 `m4s` / 源文件形态问题
+  - `direct PASS` + `proxy FAIL`：更像 Worker allowlist / 代理链路问题
+  - `direct FAIL`：先排样本部署或听悟项目，不要继续改 Worker
+
+验证方式：
+
+- `npm run verify:tingwu:control`
+- `npm run verify:tingwu:control:tail`
+- 输出中应出现：
+  - `[direct/result] PASS|FAIL`
+  - `[proxy/result] PASS|FAIL`
+  - `[conclusion] ...`
+
+适用范围：
+
+- `workers/audio-proxy/*`
+- `scripts/verify-tingwu-control*`
+- 所有需要判断“是 Worker 问题还是音频形态问题”的联调场景
+
+### 记录 007：标准 m4a 的 proxy 对照实验依赖 Worker allowlist 放行样本源站
+
+触发信号：
+
+- `npm run verify:tingwu:control` 中 `direct PASS`，但 `proxy` 预检直接失败
+- 输出或 tail 中出现 `host_not_allowed`
+- Worker 当前只允许 `*.bilivideo.com` / `*.akamaized.net`
+
+根因 / 约束：
+
+- `proxy` 对照实验会让 Worker 代理仓库内静态样本 `public/tingwu-control.m4a`
+- 这个样本默认部署在 `https://bilibili-subtitle-theta.vercel.app/tingwu-control.m4a`
+- Worker 的默认白名单只允许 B 站音频源站，不允许 Vercel 静态样本域名
+
+正确做法：
+
+- 不要把 `host_not_allowed` 误判成听悟拒绝 `m4a`
+- 给 Worker 配置 `ALLOWED_HOSTS`，至少补上：
+
+```text
+^bilibili-subtitle-theta\.vercel\.app$
+```
+
+- redeploy Worker 后，再跑：
+
+```powershell
+npm run verify:tingwu:control:tail
+```
+
+验证方式：
+
+- `proxy` 预检不再返回 `host_not_allowed`
+- tail 中能看到阿里云对 Worker 的真实请求
+- 若此后 `proxy PASS`，则可基本确认问题不在标准 `m4a + Worker` 组合
+
+适用范围：
+
+- Cloudflare Worker 音频代理联调
+- 所有基于静态样本的 proxy 对照实验

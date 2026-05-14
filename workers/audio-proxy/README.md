@@ -19,6 +19,14 @@ https://bilibili-audio-proxy.<你的 Cloudflare account subdomain>.workers.dev
 
 不要带末尾斜杠。修改 Vercel 环境变量后，需要重新部署 Vercel 项目才会生效。
 
+`ALLOWED_HOSTS` 是 Worker 侧的可选环境变量，用来覆盖默认上游白名单。默认值只放行 B 站音频域名；如果要做标准 `m4a` 对照实验，让 Worker 代理仓库内静态样本，则需要额外允许样本源站，例如：
+
+```text
+^bilibili-subtitle-theta\.vercel\.app$
+```
+
+当前仓库已经在 [wrangler.toml](D:\workspeace\bilibili-subtitle\workers\audio-proxy\wrangler.toml) 里把这条规则和默认 B 站白名单一起固化了；后续如果换 Vercel 域名，需要同步更新这里。
+
 ## 首次部署
 
 ```powershell
@@ -46,6 +54,8 @@ npx wrangler deploy --dry-run
 ```powershell
 npm run verify:transcription
 npm run verify:transcription:tail
+npm run verify:tingwu:control
+npm run verify:tingwu:control:tail
 ```
 
 当前调试目标、已排除项和下一步排查方向见 [DEBUGGING.md](./DEBUGGING.md)。

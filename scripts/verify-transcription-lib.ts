@@ -20,7 +20,7 @@ interface StartDebugProxy {
   proxyUrlHash?: string
 }
 
-interface StartData {
+export interface StartData {
   taskId: string
   proxyHost?: string
   audioHost?: string
@@ -28,7 +28,7 @@ interface StartData {
   debugProxy?: StartDebugProxy
 }
 
-interface StatusData {
+export interface StatusData {
   status: 'ONGOING' | 'COMPLETED' | 'FAILED'
   errorMessage?: string
   preview?: string
@@ -52,6 +52,7 @@ export interface ProxyProbeResult {
   acceptRanges: string | null
   contentDisposition: string | null
   previewHex: string | null
+  previewText: string | null
   error?: string
 }
 
@@ -75,6 +76,15 @@ interface VerificationDeps {
   onEvent?: (event: VerificationEvent) => void
 }
 
+export interface TaskStatusPollConfig {
+  appPassword: string
+  baseUrl: string
+  taskId: string
+  pollIntervalMs: number
+  maxWaitMs: number
+  requestTimeoutMs: number
+}
+
 function truncateText(text: string, maxLength = 180): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`
 }
@@ -84,6 +94,30 @@ function toPreviewHex(chunk: Uint8Array | undefined, maxBytes = 32): string | nu
     return null
   }
   return Array.from(chunk.slice(0, maxBytes), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function toPreviewText(
+  chunk: Uint8Array | undefined,
+  contentType: string | null,
+  maxBytes = 160,
+): string | null {
+  if (!chunk || chunk.length === 0 || !contentType) {
+    return null
+  }
+
+  const normalized = contentType.toLowerCase()
+  const isTextLike =
+    normalized.startsWith('text/') ||
+    normalized.includes('json') ||
+    normalized.includes('xml') ||
+    normalized.includes('javascript') ||
+    normalized.includes('html')
+
+  if (!isTextLike) {
+    return null
+  }
+
+  return new TextDecoder().decode(chunk.slice(0, maxBytes)).replace(/\s+/g, ' ').trim() || null
 }
 
 async function parseJsonResponse<T>(response: Response, label: string): Promise<T> {
@@ -144,23 +178,31 @@ async function startTranscription(
   )
 }
 
-async function probeProxyUrl(url: string, timeoutMs: number, fetchImpl: typeof fetch) {
+export async function probeUrl(
+  url: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch,
+  rangeHeader = 'bytes=0-',
+) {
   try {
+    const headers = rangeHeader ? { Range: rangeHeader } : undefined
     const response = await fetchImpl(url, {
-      headers: { Range: 'bytes=0-' },
+      headers,
       signal: AbortSignal.timeout(timeoutMs),
     })
     const reader = response.body?.getReader()
     const firstChunk = reader ? await reader.read() : null
     await reader?.cancel()
+    const contentType = response.headers.get('content-type')
     return {
       ok: response.ok,
       status: response.status,
-      contentType: response.headers.get('content-type'),
+      contentType,
       contentRange: response.headers.get('content-range'),
       acceptRanges: response.headers.get('accept-ranges'),
       contentDisposition: response.headers.get('content-disposition'),
       previewHex: toPreviewHex(firstChunk?.value),
+      previewText: toPreviewText(firstChunk?.value, contentType),
     } satisfies ProxyProbeResult
   } catch (error) {
     return {
@@ -171,17 +213,18 @@ async function probeProxyUrl(url: string, timeoutMs: number, fetchImpl: typeof f
       acceptRanges: null,
       contentDisposition: null,
       previewHex: null,
+      previewText: null,
       error: error instanceof Error ? error.message : String(error),
     } satisfies ProxyProbeResult
   }
 }
 
 async function fetchTaskStatus(
-  config: VerificationConfig,
+  config: Pick<TaskStatusPollConfig, 'appPassword' | 'baseUrl' | 'requestTimeoutMs'>,
   taskId: string,
   fetchImpl: typeof fetch,
 ): Promise<ApiSuccess<StatusData>> {
-  const url = new URL(`${config.baseUrl}/api/transcription/status`)
+  const url = new URL(`${config.baseUrl.replace(/\/+$/, '')}/api/transcription/status`)
   url.searchParams.set('taskId', taskId)
   return requestApi<StatusData>(
     url.toString(),
@@ -205,6 +248,36 @@ function createDefaultDeps(overrides: Partial<VerificationDeps>): VerificationDe
   }
 }
 
+export async function pollTaskStatusUntilTerminal(
+  config: TaskStatusPollConfig,
+  overrides: Partial<VerificationDeps> = {},
+): Promise<Pick<VerificationRunResult, 'polls' | 'final'>> {
+  const deps = createDefaultDeps(overrides)
+  const polls: Array<ApiSuccess<StatusData>> = []
+  const startedAt = deps.now()
+  let attempt = 0
+
+  while (true) {
+    attempt += 1
+    const status = await fetchTaskStatus(config, config.taskId, deps.fetch)
+    polls.push(status)
+    deps.onEvent?.({ type: 'poll', payload: status, attempt })
+
+    if (status.data.status !== 'ONGOING') {
+      return {
+        polls,
+        final: status,
+      }
+    }
+
+    if (deps.now() - startedAt >= config.maxWaitMs) {
+      throw new Error(`轮询超时: ${config.maxWaitMs}ms 内未进入 COMPLETED/FAILED`)
+    }
+
+    await deps.sleep(config.pollIntervalMs)
+  }
+}
+
 export async function runVerification(
   config: VerificationConfig,
   overrides: Partial<VerificationDeps> = {},
@@ -216,35 +289,28 @@ export async function runVerification(
   const proxyUrl = start.data.debugProxy?.proxyUrl
   const proxyProbe =
     config.debugProxy && proxyUrl
-      ? await probeProxyUrl(proxyUrl, config.requestTimeoutMs, deps.fetch)
+      ? await probeUrl(proxyUrl, config.requestTimeoutMs, deps.fetch)
       : null
   if (proxyProbe) {
     deps.onEvent?.({ type: 'proxyProbe', payload: proxyProbe })
   }
 
-  const polls: Array<ApiSuccess<StatusData>> = []
-  const startedAt = deps.now()
-  let attempt = 0
+  const { polls, final } = await pollTaskStatusUntilTerminal(
+    {
+      appPassword: config.appPassword,
+      baseUrl: config.baseUrl,
+      taskId: start.data.taskId,
+      pollIntervalMs: config.pollIntervalMs,
+      maxWaitMs: config.maxWaitMs,
+      requestTimeoutMs: config.requestTimeoutMs,
+    },
+    deps,
+  )
 
-  while (true) {
-    attempt += 1
-    const status = await fetchTaskStatus(config, start.data.taskId, deps.fetch)
-    polls.push(status)
-    deps.onEvent?.({ type: 'poll', payload: status, attempt })
-
-    if (status.data.status !== 'ONGOING') {
-      return {
-        start,
-        proxyProbe,
-        polls,
-        final: status,
-      }
-    }
-
-    if (deps.now() - startedAt >= config.maxWaitMs) {
-      throw new Error(`轮询超时: ${config.maxWaitMs}ms 内未进入 COMPLETED/FAILED`)
-    }
-
-    await deps.sleep(config.pollIntervalMs)
+  return {
+    start,
+    proxyProbe,
+    polls,
+    final,
   }
 }

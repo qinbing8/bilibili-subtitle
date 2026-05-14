@@ -16,9 +16,11 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "check": "tsc --noEmit",
-    "test": "node --import tsx --test tests/dev-config.test.ts tests/tingwu-task.test.ts tests/audio-proxy.test.ts tests/vercel-runtime-imports.test.ts tests/verify-transcription.test.ts tests/transcription-proxy.test.ts",
+    "test": "node --import tsx --test tests/dev-config.test.ts tests/tingwu-task.test.ts tests/audio-proxy.test.ts tests/vercel-runtime-imports.test.ts tests/verify-transcription.test.ts tests/transcription-proxy.test.ts tests/verify-tingwu-control.test.ts",
     "verify:transcription": "pwsh -NoProfile -File ./scripts/verify-transcription.ps1",
-    "verify:transcription:tail": "pwsh -NoProfile -File ./scripts/verify-transcription-tail.ps1"
+    "verify:transcription:tail": "pwsh -NoProfile -File ./scripts/verify-transcription-tail.ps1",
+    "verify:tingwu:control": "pwsh -NoProfile -File ./scripts/verify-tingwu-control.ps1",
+    "verify:tingwu:control:tail": "pwsh -NoProfile -File ./scripts/verify-tingwu-control-tail.ps1"
   },
   "dependencies": {
     "@alicloud/openapi-client": "^0.4.15",

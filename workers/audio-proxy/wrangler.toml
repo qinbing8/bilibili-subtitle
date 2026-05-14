@@ -6,3 +6,6 @@ workers_dev = true
 
 [observability]
 enabled = true
+
+[vars]
+ALLOWED_HOSTS = '^[a-z0-9-]+\\.bilivideo\\.com$,^[a-z0-9-]+\\.bilivideo\\.cn$,^[a-z0-9-]+\\.mcdn\\.bilivideo\\.cn$,^[a-z0-9-]+\\.akamaized\\.net$,^upos-[a-z0-9-]+\\.(bilivideo|akamaized)\\.(com|cn|net)$,^bilibili-subtitle-theta\\.vercel\\.app$'
