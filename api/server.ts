@@ -13,16 +13,13 @@ import {
   resolveAudioProxyAllowedHosts,
   resolveAudioProxyRateLimits,
   resolveAudioProxyTokenSecret,
-  resolveAudioProxyTtlSec,
   resolveBackendPort,
   resolvePublicProxyBaseUrl,
 } from './dev-config.js'
 import {
-  assertLikelyPublicHttpUrl,
-  buildAudioProxyUrl,
   createAudioProxyHandler,
-  signAudioProxyToken,
 } from './audio-proxy.js'
+import { buildAudioProxyTaskPayload } from './transcription-proxy.js'
 import { buildCreateTaskRequestBody, buildCreateTaskRequestQuery } from './tingwu-task.js'
 
 loadLocalEnv()
@@ -562,46 +559,6 @@ function verifyMeta(token: string): VideoMeta | null {
     return JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8'))
   } catch {
     return null
-  }
-}
-
-function buildAudioProxyTaskPayload(audio: Awaited<ReturnType<typeof getBilibiliDashAudioUrl>>) {
-  const publicProxyBaseUrl = resolvePublicProxyBaseUrl(process.env)
-  if (!publicProxyBaseUrl) {
-    throw new Error(
-      '服务端未配置 PUBLIC_PROXY_BASE_URL，听悟无法读取音频。请配置公网代理地址（推荐 cloudflared tunnel）。',
-    )
-  }
-
-  const tokenSecret = resolveAudioProxyTokenSecret(process.env)
-  if (!tokenSecret) {
-    throw new Error('服务端未配置 AUDIO_PROXY_TOKEN_SECRET，无法生成音频代理 token。')
-  }
-
-  const ttlSec = resolveAudioProxyTtlSec(process.env)
-  const token = signAudioProxyToken(
-    {
-      v: 1,
-      u: audio.audioUrl,
-      srcExp: new Date(audio.expiresAt).getTime(),
-    },
-    tokenSecret,
-    ttlSec,
-  )
-  const proxyUrl = buildAudioProxyUrl(publicProxyBaseUrl, token)
-  assertLikelyPublicHttpUrl(proxyUrl)
-
-  return {
-    proxyUrl,
-    proxyHost: new URL(proxyUrl).host,
-    audioHost: new URL(audio.audioUrl).host,
-    proxyExpiresAt: new Date(Date.now() + ttlSec * 1000).toISOString(),
-    sourceExpiresAt: audio.expiresAt,
-    proxyUrlLength: proxyUrl.length,
-    audioUrlLength: audio.audioUrl.length,
-    tokenLength: token.length,
-    fileNameBytes: Buffer.byteLength(audio.fileName, 'utf8'),
-    proxyUrlHash: crypto.createHash('sha256').update(proxyUrl).digest('hex').slice(0, 16),
   }
 }
 

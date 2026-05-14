@@ -419,3 +419,52 @@ Get-Item .\tingwu-result.docx | Select-Object Name,Length,LastWriteTime
 
 - Vercel 生产部署
 - 所有通义听悟通过公网 URL 回拉 B 站音频的场景
+
+### 记录 004：转写联调不要再手工复制粘贴 start/status/probe
+
+触发信号：
+
+- 同一轮排障里反复手工复制 `$payload`、`curl`、`status` 轮询命令
+- 调试记录分散在终端历史里，难以比较每轮的 `taskId`、`tokenLength`、`proxyUrlLength`
+- 改完代码后，无法快速判断是“代码没生效”还是“线上还没 redeploy”
+
+根因 / 约束：
+
+- 手工步骤过多，容易漏 header、漏参数、漏轮询
+- `/api/transcription/start`、proxy probe、`/api/transcription/status` 本来就是固定联调链路，适合收敛成单命令
+- 当前问题又强依赖 `tokenLength` / `proxyUrlLength` / proxy 响应头，手工比对成本高
+
+正确做法：
+
+- 统一使用：
+
+```powershell
+npm run verify:transcription
+```
+
+- 需要换视频或超时时，用：
+
+```powershell
+npm run verify:transcription -- -VideoUrl 'https://www.bilibili.com/video/BV...' -MaxWaitSec 120
+```
+
+- 把它视为唯一的端到端联调入口：一次执行内完成 `start -> proxy probe -> status poll -> PASS/FAIL`
+- 若本地代码已改，但线上输出的 `tokenLength` / `proxyUrlLength` 与改动前完全一致，先判断 Vercel 是否还没 redeploy，不要误判成代码无效
+
+验证方式：
+
+- 脚本输出：
+  - `[start] taskId=...`
+  - `[probe] status=... contentType=...`
+  - `[poll#N] status=...`
+  - `[result] PASS` 或 `[result] FAIL ...`
+- 退出码：
+  - `0` = `COMPLETED`
+  - `2` = `FAILED`
+  - `3` = timeout
+
+适用范围：
+
+- 所有 Vercel 生产联调
+- 所有 Cloudflare Worker 音频代理联调
+- 所有需要比较不同轮次 `tokenLength` / `proxyUrlLength` / proxy 响应头的排障场景
