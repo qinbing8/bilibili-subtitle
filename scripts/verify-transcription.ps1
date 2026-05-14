@@ -66,6 +66,24 @@ function Read-ResponseText {
   return ''
 }
 
+function Get-OptionalMemberValue {
+  param(
+    $InputObject,
+    [string]$Name
+  )
+
+  if ($null -eq $InputObject) {
+    return $null
+  }
+
+  $member = $InputObject.PSObject.Members[$Name]
+  if ($null -eq $member) {
+    return $null
+  }
+
+  return $member.Value
+}
+
 function Invoke-JsonRequest {
   param(
     [string]$Method,
@@ -82,7 +100,7 @@ function Invoke-JsonRequest {
     return Invoke-RestMethod -Uri $Uri -Method $Method -Headers $Headers -TimeoutSec $TimeoutSec
   } catch {
     $message = $_.Exception.Message
-    $response = $_.Exception.Response
+    $response = Get-OptionalMemberValue -InputObject $_.Exception -Name 'Response'
     if ($response) {
       $statusCode = [int]$response.StatusCode
       $text = Read-ResponseText $response
@@ -102,7 +120,7 @@ function Invoke-ProbeRequest {
     return Invoke-WebRequest -Uri $Uri -Headers @{ Range = 'bytes=0-1023' } -TimeoutSec $TimeoutSec
   } catch {
     $message = $_.Exception.Message
-    $response = $_.Exception.Response
+    $response = Get-OptionalMemberValue -InputObject $_.Exception -Name 'Response'
     if ($response) {
       $statusCode = [int]$response.StatusCode
       throw "HTTP $statusCode $message"
