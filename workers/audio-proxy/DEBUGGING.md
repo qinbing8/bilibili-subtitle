@@ -8,19 +8,23 @@
 
 - 自定义域名可达。Cloudflare tail 已看到来自 `Aliyun Computing Co., LTD / Beijing` 的真实请求。
 - Worker secret 已恢复，当前不再卡在 `config_missing`。
-- 首个 `Range: bytes=0-` 已实验为 `200`，不是“听悟拒绝首个 206”。
-- 超大越界 `Range` 已从错误的 `502` 修正为标准 `416`。
+- `proxy` 模式的 Worker allowlist 已修正，`host_not_allowed` 不再是当前阻塞点。
+- 标准 `m4a` 直连 `https://bilibili-subtitle-theta.vercel.app/tingwu-control.m4a` 仍返回 `Audio file link invalid.`。
+- 标准 `m4a` 经 Worker 代理后，阿里云真实请求序列已经验证为：
+  - `bytes=0-` -> `200`
+  - `bytes=9223372036854775799-` -> `416`
+  - `bytes=1158-` -> `206`
 - 在上述修正全部生效后，听悟仍返回 `Audio file link invalid.`。
 
 ## 当前最强怀疑点
 
-当前问题已经基本从 HTTP 状态码和基础响应头，收敛到音频文件形态本身：
+当前问题已经不再优先怀疑 `m4s` 容器形态，而更像是 **来源平台 / URL 兼容性**：
 
-- 当前代理源还是 Bilibili DASH 音频片段（`m4s`）
-- 即便 Worker 对外呈现为 `audio/mp4`
-- 听悟仍可能不接受这种封装形态
+- 同一个标准 `m4a`，放在 `vercel.app` 上直连也失败
+- 同一个标准 `m4a`，经 Cloudflare Worker 转发后仍失败
+- 这说明当前主问题不是“B 站音频是 `m4s`”，而更像“听悟对当前公开 URL 来源还有额外限制”
 
-下一轮最有价值的实验是：提供一个标准 `m4a` 对照样本，验证听悟是否能在同一链路下成功拉取。
+下一轮最有价值的实验是：把同一个标准 `m4a` 放到 **阿里云 OSS / 其他更贴近听悟网络的静态源站**，继续跑 `direct/proxy` 对照。
 
 ## 听悟官方错误关键词
 
@@ -98,7 +102,17 @@ npm run verify:tingwu:control:tail
 - `direct PASS` + `proxy FAIL`
   - 说明听悟项目本身基本正常，问题还在 Worker allowlist / 代理链路
 - `direct FAIL`
-  - 说明先不要继续折腾 Worker；先检查样本部署、听悟项目配置和基础账号状态
+  - 若样本源站是 `vercel.app`，优先怀疑 Aliyun 到该源站的可达性，不要直接归因给听悟项目本身
+
+## 当前实验结论
+
+- `direct(Vercel sample)` -> `Audio file link invalid.`
+- `proxy(Vercel sample, allowlist fixed, first 0- forced to 200)` -> 仍然 `Audio file link invalid.`
+- 这两条证据合起来说明：
+  - `m4s` 已经从主嫌疑降级
+  - `host_not_allowed` 已排除
+  - “首包 206 被拒绝” 已排除
+  - 当前更像是听悟对来源平台 / 回源方式仍有额外限制
 
 ## proxy 对照实验的额外约束
 

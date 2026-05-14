@@ -647,3 +647,76 @@ npm run verify:tingwu:control:tail
 
 - Cloudflare Worker 音频代理联调
 - 所有基于静态样本的 proxy 对照实验
+
+### 记录 008：wrangler.toml 里的 ALLOWED_HOSTS 不要写成双反斜杠
+
+触发信号：
+
+- Worker 已 redeploy，但 `proxy` 对照实验仍直接返回 `host_not_allowed`
+- `wrangler deploy` 输出里 `env.ALLOWED_HOSTS` 看起来带有 `\\.` 这类双反斜杠
+- Cloudflare tail 显示阿里云真实请求命中 Worker，但响应始终是 `403`
+
+根因 / 约束：
+
+- `wrangler.toml` 的单引号字符串是字面量字符串
+- 如果把正则写成 `\\.`，部署到环境变量后会变成“两个反斜杠”，Worker 里的 `new RegExp(...)` 实际不会按预期匹配域名
+
+正确做法：
+
+- 在 `wrangler.toml` 的单引号 TOML 字符串里，正则只写单反斜杠：
+
+```text
+^bilibili-subtitle-theta\.vercel\.app$
+```
+
+- 修正后立刻 `wrangler deploy`，再跑：
+
+```powershell
+npm run verify:tingwu:control -- -Mode proxy -MaxWaitSec 120
+```
+
+验证方式：
+
+- `proxy probe` 不再返回 `{"error":"host_not_allowed"}`
+- Cloudflare tail 中阿里云真实请求响应码不再是 `403`
+
+适用范围：
+
+- `workers/audio-proxy/wrangler.toml`
+- 所有依赖 `ALLOWED_HOSTS` 环境变量覆盖默认白名单的 Worker 部署
+
+### 记录 009：标准 m4a 也失败时，不要再优先怀疑 m4s
+
+触发信号：
+
+- 标准 `m4a` 直连 `vercel.app` 仍报 `Audio file link invalid.`
+- 标准 `m4a` 经 Worker 代理后，即使真实请求序列已达 `200 -> 416 -> 206`，最终仍报 `Audio file link invalid.`
+
+根因 / 约束：
+
+- 当同一个标准 `m4a` 已经排除了 allowlist、首包 `206`、越界 `502` 这些变量后，`m4s` 已不再是当前主嫌疑
+- 当前问题更像是来源平台 / URL 兼容性，而不是音频容器本身
+
+正确做法：
+
+- 下一轮不要继续优先折腾 `m4s -> m4a`
+- 改做“同一个标准 `m4a` 的 host matrix”：
+  - `vercel.app`
+  - Cloudflare Worker 代理
+  - 阿里云 OSS 或其他更贴近听悟网络的源站
+
+验证方式：
+
+- 对每个 host 重跑：
+
+```powershell
+npm run verify:tingwu:control -- -Mode direct -MaxWaitSec 120
+```
+
+- 只有当某个 host 对标准 `m4a` 通过时，才值得继续比较源站差异；否则先把问题归在 host / URL 兼容性层
+
+适用范围：
+
+- `verify:tingwu:control`
+- `verify:tingwu:control:tail`
+- 所有“听悟文件链接无效”排查场景

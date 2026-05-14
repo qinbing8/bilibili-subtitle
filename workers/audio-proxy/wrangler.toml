@@ -8,4 +8,5 @@ workers_dev = true
 enabled = true
 
 [vars]
-ALLOWED_HOSTS = '^[a-z0-9-]+\\.bilivideo\\.com$,^[a-z0-9-]+\\.bilivideo\\.cn$,^[a-z0-9-]+\\.mcdn\\.bilivideo\\.cn$,^[a-z0-9-]+\\.akamaized\\.net$,^upos-[a-z0-9-]+\\.(bilivideo|akamaized)\\.(com|cn|net)$,^bilibili-subtitle-theta\\.vercel\\.app$'
+ALLOWED_HOSTS = '^[a-z0-9-]+\.bilivideo\.com$,^[a-z0-9-]+\.bilivideo\.cn$,^[a-z0-9-]+\.mcdn\.bilivideo\.cn$,^[a-z0-9-]+\.akamaized\.net$,^upos-[a-z0-9-]+\.(bilivideo|akamaized)\.(com|cn|net)$,^bilibili-subtitle-theta\.vercel\.app$'
+FORCE_200_FOR_INITIAL_RANGE = "1"
