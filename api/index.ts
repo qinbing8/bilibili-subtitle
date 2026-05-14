@@ -579,8 +579,6 @@ function buildAudioProxyTaskPayload(audio: Awaited<ReturnType<typeof getBilibili
       v: 1,
       u: audio.audioUrl,
       srcExp: new Date(audio.expiresAt).getTime(),
-      mime: audio.mimeType,
-      fn: audio.fileName,
     },
     tokenSecret,
     ttlSec,

@@ -188,16 +188,12 @@ export function signAudioProxyToken(
   ttlSec: number,
   nowSec = Math.floor(Date.now() / 1000),
 ): string {
-  const compactClaims: CompactAudioProxyClaims = {
-    u: claims.u,
-    i: nowSec,
-    e: nowSec + ttlSec,
-    s: claims.srcExp,
-    ...(claims.mime ? { m: claims.mime } : {}),
-    ...(claims.fn ? { f: claims.fn } : {}),
-  }
   const payload = Buffer.from(
-    JSON.stringify(compactClaims),
+    JSON.stringify({
+      ...claims,
+      iat: nowSec,
+      exp: nowSec + ttlSec,
+    } satisfies AudioProxyClaims),
   ).toString('base64url')
 
   return `${payload}.${signPayload(payload, secret)}`

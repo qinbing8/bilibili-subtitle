@@ -253,28 +253,19 @@ test('buildAudioProxyUrl 规范化 baseUrl 末尾斜杠', () => {
   )
 })
 
-test('signAudioProxyToken 使用紧凑字段但 verify 仍恢复 MIME 和文件名', () => {
-  const token = signAudioProxyToken(
-    {
-      v: 1,
+test('verifyAudioProxyToken 兼容紧凑字段 token 并恢复 MIME 和文件名', () => {
+  const payload = Buffer.from(
+    JSON.stringify({
       u: 'https://upos-sz-mirrorcos.bilivideo.com/audio.m4s',
-      srcExp: 1_900_000_000_000,
-      mime: 'audio/mp4',
-      fn: 'sample.m4a',
-    },
-    'proxy-secret',
-    600,
-    1_700_000_000,
-  )
-
-  const [payload] = token.split('.')
-  const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
-  assert.equal(decoded.m, 'audio/mp4')
-  assert.equal(decoded.f, 'sample.m4a')
-  assert.equal('mime' in decoded, false)
-  assert.equal('fn' in decoded, false)
-  assert.equal('bvid' in decoded, false)
-  assert.equal('cid' in decoded, false)
+      i: 1_700_000_000,
+      e: 1_700_000_600,
+      s: 1_900_000_000_000,
+      m: 'audio/mp4',
+      f: 'sample.m4a',
+    }),
+  ).toString('base64url')
+  const sig = crypto.createHmac('sha256', 'proxy-secret').update(payload).digest('base64url')
+  const token = `${payload}.${sig}`
 
   const verified = verifyAudioProxyToken(token, 'proxy-secret', 1_700_000_100)
   assert.equal(verified.ok, true)

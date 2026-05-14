@@ -44,6 +44,8 @@
 - 已确认仅删除可选字段后，`proxyUrlLength` 从 `1159` 降到 `1032`，但仍偏长，说明真正的主问题是“URL 需要进一步压缩”，而不是单纯删掉文件名等附加信息。
 - 已完成第四轮最小修正：代理 token 改为紧凑字段编码，保留 `u/srcExp/iat/exp/mime/fn` 的语义，但移除 `bvid/cid` 并把字段名压短，以同时兼顾“缩短 `fileUrl`”和“保留 Worker 侧 `Content-Type` / `Content-Disposition` 覆盖能力”。
 - 已完成本地回归验证：主工程 `npm run check`、`npm test` 通过，Worker 子工程 `npm run check`、`npm test` 通过。
+- 已验证紧凑字段 token 的线上结果：听悟开始命中 Worker，但由于 Cloudflare 上运行的仍是旧 Worker 版本，返回 `401 malformed`，说明“缩短 URL”方向有效，但当前最短路径应先回退到线上 Worker 已支持的 canonical token 结构。
+- 已完成当前回退修正：Vercel 再次使用 canonical token 结构，但仅保留 `v/u/srcExp/iat/exp` 最小 claims 集合，优先恢复“最短 URL 且 Worker 能验签通过”的链路。
 
 4. 未完成
 
@@ -53,6 +55,7 @@
 - 还没有拿到 Vercel 新调试字段对应的生产返回值，因此当前还不能确认第二类失败是否由 `fileUrl` 长度或 token 负载触发。
 - 还没有拿到“缩短 token 后”的生产 `debugProxy` 返回值，因此暂时无法确认第二类失败是否会随 `proxyUrlLength` 下降而消失。
 - 还没有拿到“紧凑字段 token”上线后的生产 `debugProxy` 返回值，因此还不能确认是否已经压到听悟可接受的阈值以下。
+- 还没有拿到“canonical 最小 claims token”回退后的新一轮生产 `debugProxy` 返回值，因此还不能判断 `proxyUrlLength` 进一步下降后，任务会回到“命中 Worker 但 invalid”还是直接成功。
 - 还没有做长视频端到端验证。
 
 5. 关键文件
