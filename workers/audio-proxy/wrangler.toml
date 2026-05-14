@@ -1,0 +1,8 @@
+name = "bilibili-audio-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-05-14"
+compatibility_flags = ["nodejs_compat_v2"]
+workers_dev = true
+
+[observability]
+enabled = true

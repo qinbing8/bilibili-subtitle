@@ -114,7 +114,66 @@ npm test
 - `npm test` 已固定为显式列出 `*.test.ts`，避免 PowerShell 把 `tests/test_parsing.py` 一起带入 Node 测试
 - 这两个命令都可以由 Codex 执行；但 `npm run dev:backend` 仍必须由人工终端启动
 
-## 当前剩余联调步骤
+## 当前 Cloudflare Worker 音频代理部署步骤
+
+Worker 方案取代临时 `cloudflared tunnel`：Vercel 继续负责创建听悟任务，Cloudflare Worker 只负责让听悟回拉音频。
+
+### 1. 部署 Worker
+
+在项目目录下执行一次性命令：
+
+```powershell
+Set-Location D:\workspeace\bilibili-subtitle\workers\audio-proxy
+npm install
+npx wrangler login
+npx wrangler secret put AUDIO_PROXY_TOKEN_SECRET
+npx wrangler deploy
+```
+
+`AUDIO_PROXY_TOKEN_SECRET` 要点：
+
+- Vercel 上的 `AUDIO_PROXY_TOKEN_SECRET`：后端用来生成代理 token。
+- Worker 里的 `AUDIO_PROXY_TOKEN_SECRET`：Worker 用来校验代理 token。
+- 两边值必须完全一样。
+- 如果 Vercel 已经配置好了，不要改 Vercel；这里只是在 `wrangler secret put` 时把同一个值粘贴进 Worker。
+
+部署成功后，记录输出的 Worker URL，形如：
+
+```text
+https://bilibili-audio-proxy.<你的CF account subdomain>.workers.dev
+```
+
+### 2. 修改 Vercel
+
+在 Vercel Dashboard → Project `bilibili-subtitle-theta` → Settings → Environment Variables：
+
+- `PUBLIC_PROXY_BASE_URL` 改成 Worker URL，不要带末尾斜杠。
+- `AUDIO_PROXY_TOKEN_SECRET` 保持与 Worker secret 完全一致。
+- 修改后手动 Redeploy，环境变量不会自动让旧部署生效。
+
+### 3. 验证
+
+本地代码级验证：
+
+```powershell
+npm run check
+npm test
+Set-Location D:\workspeace\bilibili-subtitle\workers\audio-proxy
+npm run check
+npm test
+npx wrangler deploy --dry-run
+```
+
+端到端验证：
+
+- 用 1 到 3 分钟短视频发起转写。
+- Vercel 日志中 `/api/transcription/start` 应返回 `200` 和 `taskId`。
+- Cloudflare Dashboard → Workers → `bilibili-audio-proxy` → Real-time Logs 应看到听悟回拉请求。
+- `/api/transcription/status` 最终应为 `COMPLETED`。
+
+若 Vercel 任务失败且 Worker 完全没有命中，说明听悟 cn-beijing 也无法访问 `workers.dev`，需要切换到自定义域名或阿里云函数计算方案。
+
+## 历史 cloudflared 联调步骤（已被 Worker 方案取代）
 
 以下步骤用于完成当前公网代理方案下的 4 到 8 链路验证。前提是你已经手工启动本地后端，并准备好：
 
@@ -249,7 +308,7 @@ Get-Item .\tingwu-result.docx | Select-Object Name,Length,LastWriteTime
 - 标题、正文、时间段存在
 - 无损坏提示
 
-## 当前联调结论（2026-05-12）
+## 历史 cloudflared 联调结论（2026-05-12）
 
 本次代码改造后的结论：
 
@@ -329,3 +388,34 @@ Get-Item .\tingwu-result.docx | Select-Object Name,Length,LastWriteTime
 - 本地联调
 - Vercel 部署
 - 所有依赖通义听悟拉取 B 站音频的场景
+
+### 记录 003：听悟 cn-beijing 预检无法到达 Vercel audio-proxy
+
+触发信号：
+
+- `/api/transcription/start` 创建任务后几秒内失败
+- 听悟错误为 `TSC.AudioFileLink` 或 `Audio file link invalid`
+- Vercel 日志中没有 `/api/audio-proxy` 命中
+
+根因 / 约束：
+
+- 听悟在 CreateTask 阶段会同步预检 `FileUrl`
+- cn-beijing 阿里云出口访问 `*.vercel.app` 不稳定，可能在 DNS/TCP 阶段失败
+- 预检失败时，听悟不会真正请求音频代理路由
+
+正确做法：
+
+- 不要继续把 `PUBLIC_PROXY_BASE_URL` 指向 `*.vercel.app`
+- 优先把音频代理迁到 Cloudflare Worker，并把 Vercel 的 `PUBLIC_PROXY_BASE_URL` 指向 Worker URL
+- Vercel 与 Worker 的 `AUDIO_PROXY_TOKEN_SECRET` 必须完全一致
+
+验证方式：
+
+- Worker Real-time Logs 可见听悟来源请求
+- Worker 返回 `200` 或 `206`
+- `/api/transcription/status` 最终为 `COMPLETED`
+
+适用范围：
+
+- Vercel 生产部署
+- 所有通义听悟通过公网 URL 回拉 B 站音频的场景

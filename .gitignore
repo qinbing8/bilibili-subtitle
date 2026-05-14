@@ -40,3 +40,7 @@ lerna-debug.log*
 # Testing
 coverage
 .ace-tool/
+
+# Cloudflare Workers
+workers/audio-proxy/node_modules/
+workers/audio-proxy/.wrangler/

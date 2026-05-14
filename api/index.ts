@@ -596,6 +596,11 @@ function buildAudioProxyTaskPayload(audio: Awaited<ReturnType<typeof getBilibili
     audioHost: new URL(audio.audioUrl).host,
     proxyExpiresAt: new Date(Date.now() + ttlSec * 1000).toISOString(),
     sourceExpiresAt: audio.expiresAt,
+    proxyUrlLength: proxyUrl.length,
+    audioUrlLength: audio.audioUrl.length,
+    tokenLength: token.length,
+    fileNameBytes: Buffer.byteLength(audio.fileName, 'utf8'),
+    proxyUrlHash: crypto.createHash('sha256').update(proxyUrl).digest('hex').slice(0, 16),
   }
 }
 
@@ -760,12 +765,24 @@ app.post('/api/transcription/start', async (req, res) => {
     }
 
     const audio = await getBilibiliDashAudioUrl(bilibiliUrl, Number(page) || 0)
-    const { proxyUrl, proxyHost, audioHost, proxyExpiresAt, sourceExpiresAt } =
+    const {
+      proxyUrl,
+      proxyHost,
+      audioHost,
+      proxyExpiresAt,
+      sourceExpiresAt,
+      proxyUrlLength,
+      audioUrlLength,
+      tokenLength,
+      fileNameBytes,
+      proxyUrlHash,
+    } =
       buildAudioProxyTaskPayload(audio)
     const taskId = await createTingwuTask(proxyUrl, language, {
       diarization: !!diarization,
       textPolish: !!textPolish,
     })
+    const includeDebugProxy = req.get('X-Debug-Proxy') === '1'
 
     const meta: VideoMeta = {
       title: audio.title,
@@ -774,6 +791,18 @@ app.post('/api/transcription/start', async (req, res) => {
       fileName: audio.fileName,
       source: '通义听悟',
     }
+
+    console.log('[transcription/start]', {
+      taskId,
+      proxyHost,
+      audioHost,
+      proxyUrlLength,
+      audioUrlLength,
+      tokenLength,
+      fileNameBytes,
+      proxyUrlHash,
+      includeDebugProxy,
+    })
 
     res.setHeader('Cache-Control', 'no-store')
     return res.json({
@@ -795,6 +824,18 @@ app.post('/api/transcription/start', async (req, res) => {
             ? '降级为 FLV（含视频），听悟可能拒绝。建议配置 BILIBILI_SESSDATA。'
             : null,
         metaToken: signMeta(meta),
+        ...(includeDebugProxy
+          ? {
+              debugProxy: {
+                proxyUrl,
+                proxyUrlLength,
+                audioUrlLength,
+                tokenLength,
+                fileNameBytes,
+                proxyUrlHash,
+              },
+            }
+          : {}),
       },
     })
   } catch (error) {
